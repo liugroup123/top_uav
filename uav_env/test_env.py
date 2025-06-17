@@ -12,11 +12,11 @@ def test_env(render_mode):
     env = UAVEnv(render_mode=render_mode)
     obs,_= env.reset()
 
-    # 打印观测维度（使用字典结构）
-    print("Initial observation shapes:", {k: v.shape for k, v in obs.items()})
+    # # 打印观测维度（使用字典结构）
+    # print("Initial observation shapes:", {k: v.shape for k, v in obs.items()})
 
-    # 打印动作空间维度（每个 agent）
-    print("Action space shapes:", {f"agent_{i}": env.action_space[i].shape for i in range(env.num_agents)})
+    # # 打印动作空间维度（每个 agent）
+    # print("Action space shapes:", {f"agent_{i}": env.action_space[i].shape for i in range(env.num_agents)})
 
     for step in range(100):
         # 构建动作字典
