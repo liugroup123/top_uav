@@ -139,10 +139,10 @@ class Critic(nn.Module):
         
         # GAT层处理智能体间的交互
         self.gat1 = GATConv(
-            in_channels=self.input_dim,  # 每个智能体的输入维度
+            in_channels=self.input_dim,
             out_channels=hidden_size,
-            heads=2,  # 减少到2个注意力头
-            dropout=0.1
+            heads=1,  # 进一步减少注意力头
+            dropout=0.05  # 减少dropout
         )
         self.gat2 = GATConv(
             in_channels=hidden_size * 2,  # 修改这里：现在第一层有2个头，所以是 hidden_size * 2
@@ -193,9 +193,10 @@ class Critic(nn.Module):
         x = x.view(-1, self.input_dim)
         edge_index = self._batch_adj_to_edge_index(adj_matrix)
         
-        # 使用 torch.nn.parallel.data_parallel 如果有多个 GPU
-        h = F.elu(self.gat1(x, edge_index))
-        h = self.gat2(h, edge_index)
+        # 使用批处理版本的GAT
+        batch = torch.arange(batch_size, device=x.device).repeat_interleave(self.n_agents)
+        h = F.elu(self.gat1(x, edge_index, batch=batch))
+        h = self.gat2(h, edge_index, batch=batch)
         
         # 重塑输出
         h = h.view(batch_size, self.n_agents, -1)
@@ -446,13 +447,21 @@ class MATD3(nn.Module):
 
     @torch.no_grad()
     def _is_connected(self, adj_matrix):
-        """使用矩阵乘法检查图的连通性"""
+        """使用广度优先搜索检查连通性，比矩阵幂更高效"""
         n = adj_matrix.size(0)
-        # 使用矩阵幂来检查连通性
-        matrix_power = adj_matrix.clone()
-        for _ in range(n-1):
-            matrix_power = torch.matmul(matrix_power, adj_matrix)
-        return not torch.any(matrix_power == 0)
+        visited = torch.zeros(n, dtype=torch.bool, device=adj_matrix.device)
+        queue = [0]  # 从第一个节点开始
+        visited[0] = True
+        
+        while queue:
+            node = queue.pop(0)
+            neighbors = torch.where(adj_matrix[node] > 0)[0]
+            for neighbor in neighbors:
+                if not visited[neighbor]:
+                    visited[neighbor] = True
+                    queue.append(neighbor.item())
+        
+        return torch.all(visited)
 
     def _ensure_connectivity(self, adj_matrix):
         """确保图是连通的，如果不连通则添加必要的边"""
