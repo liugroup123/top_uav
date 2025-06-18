@@ -12,7 +12,7 @@ import pdb
 def test_topology_changes(render_mode='human'):
     print("\n=== 测试动态拓扑变化 ===")
     
-    # 初始化环境，使用6个UAV便于测试失效和添加
+    # 初始化环境
     env = UAVEnv(
         num_agents=6,
         num_targets=10,
@@ -21,12 +21,20 @@ def test_topology_changes(render_mode='human'):
         coverage_radius=0.3,
         communication_radius=0.6
     )
+    
+    # 设置为评估模式
+    env.eval()
+    
     obs, _ = env.reset()
 
     # 测试阶段1：正常运行
     print("\n第一阶段：系统正常运行")
     for step in range(50):  # 先让系统运行一段时间达到稳定
-        actions = {f"agent_{i}": env.action_space[i].sample() for i in range(env.num_agents)}
+        # 确保动作是float32类型
+        actions = {
+            f"agent_{i}": env.action_space[i].sample().astype(np.float32) 
+            for i in range(env.num_agents)
+        }
         obs, rewards, dones, _, _ = env.step(actions)
         
         if render_mode == 'human':
@@ -47,7 +55,7 @@ def test_topology_changes(render_mode='human'):
     for step in range(50):
         # 只为活跃的UAV生成动作
         actions = {
-            f"agent_{i}": env.action_space[i].sample() 
+            f"agent_{i}": env.action_space[i].sample().astype(np.float32) 
             for i in env.active_agents  # 只为活跃的UAV生成动作
         }
         
@@ -68,7 +76,7 @@ def test_topology_changes(render_mode='human'):
     print(f"在位置 {new_uav_pos} 添加新UAV {new_uav_idx}")
 
     for step in range(50):  # 观察系统整合新UAV
-        actions = {f"agent_{i}": env.action_space[i].sample() for i in range(env.num_agents)}
+        actions = {f"agent_{i}": env.action_space[i].sample().astype(np.float32) for i in range(env.num_agents)}
         obs, rewards, dones, _, _ = env.step(actions)
         
         if render_mode == 'human':
@@ -110,7 +118,7 @@ def test_random_topology_changes(render_mode='human', total_steps=200):
                     print(f"\nStep {step}: 添加新UAV {new_uav_idx}")
         
         # 正常步进
-        actions = {f"agent_{i}": env.action_space[i].sample() for i in range(env.num_agents)}
+        actions = {f"agent_{i}": env.action_space[i].sample().astype(np.float32) for i in range(env.num_agents)}
         obs, rewards, dones, _, _ = env.step(actions)
         
         if render_mode == 'human':

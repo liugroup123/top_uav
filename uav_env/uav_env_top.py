@@ -117,7 +117,7 @@ class UAVEnv(gym.Env):
         
         # 添加历史记录用于计算稳定性
         self.coverage_history = []
-        self.prev_actions = np.zeros((self.num_agents, 2))
+        self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
 
         # 初始时所有UAV都是活跃的
         self.active_agents = list(range(num_agents))
@@ -146,163 +146,210 @@ class UAVEnv(gym.Env):
             'pre_change_coverage': None,     # 变化前的覆盖率
         }
 
+        self.training = True  # 默认为训练模式
+        
+        # GAT网络初始化时设置训练模式
+        self.gat_network.train()  # 设置为训练模式
+        
+        # 优化1：添加缓存
+        self._cache = {}
+        
+        # 优化2：预分配常用数组
+        self._agent_mask = np.zeros(num_agents, dtype=bool)
+        
+        # 优化3：设置CUDA优化参数
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.cuda.empty_cache()
+
         self.reset()
 
     def reset(self, seed=None):
         self.curr_step = 0
         self.max_coverage_rate = 0.0
 
-
-        # 初始化随机种子（确保复现性）
+        # 初始化随机种子
         if seed is not None:
             np.random.seed(seed)
 
-        # 初始化无人机位置（靠底部排列，防止重叠）
+        # 初始化无人机位置（确保使用float32）
         self.agent_pos = []
         bottom_y = -self.world_size + 0.15
         spacing = 2 * self.world_size / (self.num_agents + 1)
         for i in range(self.num_agents):
             x = -self.world_size + (i + 1) * spacing
             self.agent_pos.append([x, bottom_y])
-        self.agent_pos = np.array(self.agent_pos, dtype=np.float32)
+        self.agent_pos = np.array(self.agent_pos, dtype=np.float32)  # 明确指定float32
 
+        # 初始化速度
         self.agent_vel = np.zeros((self.num_agents, 2), dtype=np.float32)
 
-        # 初始化目标点位置（随机散布）
-        self.target_pos = np.random.uniform(-self.world_size*0.85, self.world_size*0.85, (self.num_targets, 2))
+        # 初始化目标点位置
+        self.target_pos = np.random.uniform(
+            -self.world_size*0.85, 
+            self.world_size*0.85, 
+            (self.num_targets, 2)
+        ).astype(np.float32)  # 确保使用float32
 
         # 构建初始邻接矩阵
         self._build_adjacency_matrices()
 
         # 重置历史记录
         self.coverage_history = []
-        self.prev_actions = np.zeros((self.num_agents, 2))
+        self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
 
         obs_list = self._get_obs()
-        return {f"agent_{i}": obs_list[i] for i in range(self.num_agents)},{}
+        return {f"agent_{i}": obs_list[i] for i in range(self.num_agents)}, {}
 
 
     def step(self, action_dict):
-        actions = []
-        for i in range(self.num_agents):
-            if i in self.active_agents:
-                # 活跃的UAV使用正常动作
-                actions.append(action_dict[f"agent_{i}"])
-            else:
-                # 失效的UAV保持在原地，速度为0
-                actions.append(np.zeros(self.action_space[0].shape))
+        """优化的步进函数"""
+        # 优化1：预分配动作数组
+        actions = np.zeros((self.num_agents, 2), dtype=np.float32)
         
-        # 处理每个智能体的动作
-        for i, action in enumerate(actions):
-            if i in self.active_agents:
-                # 只更新活跃UAV的状态
-                self.agent_vel[i] = self._process_action_and_dynamics(action, i)
-                self.agent_pos[i] += self.agent_vel[i] * self.dt
-                self.agent_pos[i] = np.clip(self.agent_pos[i], -self.world_size, self.world_size)
-            else:
-                # 失效的UAV保持在最后的位置，速度为0
-                self.agent_vel[i] = np.zeros_like(self.agent_vel[i])
+        # 优化2：批量处理动作
+        for i in self.active_agents:
+            actions[i] = action_dict[f"agent_{i}"]
+        
+        # 优化3：批量更新状态
+        mask = np.array([i in self.active_agents for i in range(self.num_agents)])
+        
+        # 处理动作和更新状态
+        self.agent_vel[mask] = np.array([
+            self._process_action_and_dynamics(actions[i], i)
+            for i in self.active_agents
+        ])
+        
+        # 更新位置
+        self.agent_pos[mask] += self.agent_vel[mask] * self.dt
+        np.clip(self.agent_pos, -self.world_size, self.world_size, out=self.agent_pos)
+        
+        # 非活跃UAV速度置零
+        self.agent_vel[~mask] = 0
         
         # 更新邻接矩阵
         self._build_adjacency_matrices()
 
-        self.curr_step += 1 # 步数加1
-        obs_list = self._get_obs()  #获取当前观察
-        rewards_list = self._compute_rewards()  #计算奖励函数
+        self.curr_step += 1
+        obs_list = self._get_obs()
+        rewards_list = self._compute_rewards()
         dones_list = [self.curr_step >= self.max_steps] * self.num_agents
 
-        obs = {f"agent_{i}": obs_list[i] for i in range(self.num_agents)}
-        rewards = {f"agent_{i}": rewards_list[i] for i in range(self.num_agents)}
-        dones = {f"agent_{i}": dones_list[i] for i in range(self.num_agents)}
-        infos = {f"agent_{i}": {} for i in range(self.num_agents)}
-
-        return obs, rewards, dones, False, infos
+        return (
+            {f"agent_{i}": obs_list[i] for i in range(self.num_agents)},
+            {f"agent_{i}": rewards_list[i] for i in range(self.num_agents)},
+            {f"agent_{i}": dones_list[i] for i in range(self.num_agents)},
+            False,
+            {f"agent_{i}": {} for i in range(self.num_agents)}
+        )
 
 
     """
     观察函数相关的函数
     """
     def _get_obs(self):
+        """获取观察，优化GPU使用和计算效率"""
         obs = []
 
-        # 基础特征：位置和速度
-        uav_features = torch.tensor(
-            np.concatenate([self.agent_pos, self.agent_vel], axis=1),
-            dtype=torch.float32,
-            device=self.device
-        )
-        target_features = torch.tensor(
-            self.target_pos,
-            dtype=torch.float32,
-            device=self.device
-        )
+        # 优化1：一次性转换到GPU，减少数据传输
+        with torch.cuda.amp.autocast():  # 使用混合精度加速
+            uav_features = torch.tensor(
+                np.concatenate([self.agent_pos, self.agent_vel], axis=1),
+                dtype=torch.float32,
+                device=self.device
+            )
+            target_features = torch.tensor(
+                self.target_pos,
+                dtype=torch.float32,
+                device=self.device
+            )
 
-        # GAT前向传播（静态特征提取）
-        with torch.no_grad():
-            gat_features = self.gat_network(
-                uav_features,
-                target_features,
-                self.uav_adj,
-                self.target_adj
-            ).detach().cpu().numpy()  # 优化：提前 detach 并移动到 CPU
-
-        # 每个智能体的观察拼接
-        for i in range(self.num_agents):
-            if i in self.active_agents:  # 只为活跃的UAV生成观察
-                o = [*self.agent_pos[i], *self.agent_vel[i]]
-
-                # 相对目标点位置
-                rel_targets = (self.target_pos - self.agent_pos[i]).reshape(-1).tolist()
-                o += rel_targets
-
-                # 邻居相对位置（带通信判断）
-                neigh = []
-                for j in range(self.num_agents):
-                    if j == i:
-                        continue
-                    if j in self.active_agents:  # 只考虑活跃的邻居
-                        delta = self.agent_pos[j] - self.agent_pos[i]
-                        if np.linalg.norm(delta) <= self.communication_radius:
-                            neigh += delta.tolist()
-                        else:
-                            neigh += [0.0, 0.0]
-                    else:
-                        neigh += [0.0, 0.0]  # 对于非活跃的UAV，添加零向量
-                o += neigh
-
-                # 拼接 GAT 特征
-                o += gat_features[i].tolist()
-
-                # 添加拓扑变化信息
-                topology_info = [
-                    1.0 if self.topology_change['in_progress'] else 0.0,
-                    1.0 if self.topology_change['change_type'] == 'failure' else 0.0,
-                    float(self.curr_step - self.topology_change['start_step']) / self.max_steps if self.topology_change['in_progress'] else 0.0
-                ]
-                o += topology_info
-
-                obs.append(np.array(o, dtype=np.float32))
+            # GAT前向传播
+            if self.training:
+                gat_features = self.gat_network(
+                    uav_features,
+                    target_features,
+                    self.uav_adj,
+                    self.target_adj
+                )
             else:
-                # 对于非活跃的UAV，生成零观察
+                with torch.no_grad():
+                    gat_features = self.gat_network(
+                        uav_features,
+                        target_features,
+                        self.uav_adj,
+                        self.target_adj
+                    )
+        
+        # 优化2：批量处理GAT特征
+        gat_features_np = gat_features.detach().cpu().numpy()
+
+        # 优化3：预计算相对目标位置
+        relative_targets = self.target_pos[None, :, :] - self.agent_pos[:, None, :]
+        relative_targets = relative_targets.reshape(self.num_agents, -1)
+
+        # 为每个UAV生成观察
+        for i in range(self.num_agents):
+            if i in self.active_agents:
+                obs_i = np.concatenate([
+                    self.agent_pos[i],          # 位置
+                    self.agent_vel[i],          # 速度
+                    relative_targets[i],        # 预计算的相对目标位置
+                    self._get_neighbor_info(i), # 邻居信息
+                    gat_features_np[i],        # GAT特征
+                    self._get_topology_info()   # 拓扑变化信息
+                ])
+                obs.append(obs_i.astype(np.float32))
+            else:
                 obs.append(np.zeros(self.observation_space[0].shape, dtype=np.float32))
 
         return obs
+
+    def _get_relative_targets(self, agent_idx):
+        """获取相对目标位置"""
+        return (self.target_pos - self.agent_pos[agent_idx]).reshape(-1).tolist()
+
+    def _get_neighbor_info(self, agent_idx):
+        """获取邻居信息"""
+        neighbor_info = []
+        for j in range(self.num_agents):
+            if j != agent_idx:
+                if j in self.active_agents:
+                    delta = self.agent_pos[j] - self.agent_pos[agent_idx]
+                    if np.linalg.norm(delta) <= self.communication_radius:
+                        neighbor_info.extend(delta)
+                    else:
+                        neighbor_info.extend([0.0, 0.0])
+                else:
+                    neighbor_info.extend([0.0, 0.0])
+        return neighbor_info
+
+    def _get_topology_info(self):
+        """获取拓扑变化信息"""
+        return [
+            1.0 if self.topology_change['in_progress'] else 0.0,
+            1.0 if self.topology_change['change_type'] == 'failure' else 0.0,
+            float(self.curr_step - self.topology_change['start_step']) / self.max_steps 
+            if self.topology_change['in_progress'] else 0.0
+        ]
     
     # 构建邻接矩阵
     def _build_adjacency_matrices(self):
-        """
-        构建UAV-UAV和UAV-Target的邻接矩阵
-        """
-        uav_positions = torch.tensor(self.agent_pos, device=self.device)
-        target_positions = torch.tensor(self.target_pos, device=self.device)
+        """优化的邻接矩阵构建"""
+        # 确保使用float32类型
+        uav_positions = torch.tensor(self.agent_pos, dtype=torch.float32, device=self.device)
+        target_positions = torch.tensor(self.target_pos, dtype=torch.float32, device=self.device)
         
-        self.uav_adj, self.target_adj = create_adjacency_matrices(
-            uav_positions=uav_positions,
-            target_positions=target_positions,
-            comm_radius=self.communication_radius,
-            coverage_radius=self.coverage_radius
-        )
+        # 批量计算距离
+        uav_dists = torch.cdist(uav_positions, uav_positions)
+        target_dists = torch.cdist(uav_positions, target_positions)
         
+        # 使用向量化操作
+        self.uav_adj = (uav_dists <= self.communication_radius).float()
+        self.target_adj = (target_dists <= self.coverage_radius).float()
+        
+        # 移除自环
+        self.uav_adj.fill_diagonal_(0)
 
     """
     奖励函数相关的函数
@@ -747,4 +794,18 @@ class UAVEnv(gym.Env):
                 best_pos = pos
             
         return np.array(best_pos)
+
+    def train(self):
+        """设置为训练模式，并进行相关优化"""
+        self.training = True
+        self.gat_network.train()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()  # 清理GPU缓存
+
+    def eval(self):
+        """设置为评估模式，并进行相关优化"""
+        self.training = False
+        self.gat_network.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()  # 清理GPU缓存
 # 
