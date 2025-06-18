@@ -68,7 +68,7 @@ def main():
     print(f"使用设备: {device}")
 
     # 初始化并行环境
-    num_envs = max(1, mp.cpu_count() - 2)  # 使用CPU核心数-2个环境
+    num_envs = 5  # 使用并行环境数量
     print(f"使用 {num_envs} 个并行环境")
     
     env = ParallelUAVEnv(
