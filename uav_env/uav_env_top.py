@@ -555,110 +555,85 @@ class UAVEnv(gym.Env):
             sy = int((y / fixed_cam) * (self.height / 2) + self.height / 2)
             return sx, sy
 
-        # 画目标点
+        # 画目标点（绿色）
         for tpos in self.target_pos:
             sx, sy = to_screen(tpos)
             pygame.draw.circle(self.screen, (0, 255, 0), (sx, sy), 5)
 
         # 存储无人机屏幕位置用于连线
-        screen_positions = []
+        screen_positions = {}  # 使用字典存储，键为UAV索引
 
+        # 首先绘制所有UAV
         for i, apos in enumerate(self.agent_pos):
             sx, sy = to_screen(apos)
-            screen_positions.append((sx, sy))
+            screen_positions[i] = (sx, sy)
 
             if i in self.active_agents:
                 # 活跃的UAV用蓝色
                 color = (0, 0, 255)  # 蓝色
+                # 绘制探测半径圆圈（实线）
+                coverage_radius_px = int((self.coverage_radius / fixed_cam) * (self.width/2))
+                pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), coverage_radius_px, 1)
+                
+                # 绘制通信半径圆圈（蓝色虚线）
+                comm_radius_px = int((self.communication_radius / fixed_cam) * (self.width/2))
+                # 创建虚线效果
+                num_segments = 80
+                for seg in range(num_segments):
+                    if seg % 2 == 0:
+                        start_angle = 2 * np.pi * seg / num_segments
+                        end_angle = 2 * np.pi * (seg + 1) / num_segments
+                        start_pos = (
+                            sx + int(comm_radius_px * np.cos(start_angle)),
+                            sy + int(comm_radius_px * np.sin(start_angle))
+                        )
+                        end_pos = (
+                            sx + int(comm_radius_px * np.cos(end_angle)),
+                            sy + int(comm_radius_px * np.sin(end_angle))
+                        )
+                        pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)
             else:
-                # 失效的UAV用灰色
+                # 失效的UAV用灰色，且不绘制半径圈
                 color = (128, 128, 128)  # 灰色
             
+            # 绘制UAV本体
             pygame.draw.circle(self.screen, color, (sx, sy), 8)
 
-            # 绘制探测半径圆圈（实线）
-            coverage_radius_px = int((self.coverage_radius / fixed_cam) * (self.width/2))
-            pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), coverage_radius_px, 1)
-            
-            # 绘制通信半径圆圈（蓝色虚线）
-            comm_radius_px = int((self.communication_radius / fixed_cam) * (self.width/2))
-            # 创建虚线效果
-            num_segments = 80  # 虚线段数
-            for i in range(num_segments):
-                if i % 2 == 0:  # 只画偶数段，形成虚线
-                    start_angle = 2 * np.pi * i / num_segments
-                    end_angle = 2 * np.pi * (i + 1) / num_segments
-                    # 计算弧段的起点和终点
-                    start_pos = (
-                        sx + int(comm_radius_px * np.cos(start_angle)),
-                        sy + int(comm_radius_px * np.sin(start_angle))
-                    )
-                    end_pos = (
-                        sx + int(comm_radius_px * np.cos(end_angle)),
-                        sy + int(comm_radius_px * np.sin(end_angle))
-                    )
-                    # 画虚线段
-                    pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)  # 使用浅蓝色
-
-        # 画红线：若两个无人机之间的距离小于通信范围
+        # 然后绘制连接线（只在活跃UAV之间）
         for i in range(self.num_agents):
+            if i not in self.active_agents:
+                continue  # 跳过非活跃UAV
+            
             for j in range(i + 1, self.num_agents):
+                if j not in self.active_agents:
+                    continue  # 跳过非活跃UAV
+                
+                # 只有当两个UAV都是活跃的时才检查连接
                 dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
                 if dist <= self.communication_radius:
-                    pygame.draw.line(self.screen, (255, 0, 0),
-                                    screen_positions[i], screen_positions[j], 1)
+                    # 画红色连接线
+                    pygame.draw.line(
+                        self.screen, 
+                        (255, 0, 0),  # 红色
+                        screen_positions[i], 
+                        screen_positions[j], 
+                        2  # 线宽
+                    )
 
-    """
-    计算覆盖率,连通性相关的函数
-    """
-    def calculate_coverage_complete(self):
-        # 计算目标点是否被覆盖
-        covered_flags = []
-        for target in self.target_pos:
-            covered = False
-            for agent in self.agent_pos:
-                distance = np.linalg.norm(target - agent)
-                if distance <= self.coverage_radius:
-                    covered = True
-                    break
-            covered_flags.append(covered)
-
-        # 计算覆盖率
-        covered_count = sum(covered_flags)
-        total_targets = len(self.target_pos)
-        coverage_rate = covered_count / total_targets if total_targets > 0 else 0
-
-        # 构建通信邻接矩阵
-        num_agents = self.num_agents
-        adjacency_matrix = np.zeros((num_agents, num_agents), dtype=bool)
-        for i in range(num_agents):
-            for j in range(i + 1, num_agents):
-                distance = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
-                if distance <= self.communication_radius:
-                    adjacency_matrix[i, j] = True
-                    adjacency_matrix[j, i] = True
-
-        # DFS 检查连通性
-        visited = [False] * num_agents
-
-        def dfs(idx):
-            visited[idx] = True
-            for neighbor_idx, connected in enumerate(adjacency_matrix[idx]):
-                if connected and not visited[neighbor_idx]:
-                    dfs(neighbor_idx)
-
-        dfs(0)
-        fully_connected = all(visited)
-        unconnected_count = visited.count(False)
-
-        # 更新最大覆盖率
-        if fully_connected:
-            self.max_coverage_rate = max(self.max_coverage_rate, coverage_rate)
-
-        return coverage_rate, fully_connected, self.max_coverage_rate, unconnected_count
-
-
-
+        # 如果正在发生拓扑变化，添加文本提示
+        if self.topology_change['in_progress']:
+            font = pygame.font.Font(None, 36)
+            if self.topology_change['change_type'] == 'failure':
+                text = f"UAV {self.topology_change['affected_agent']} Failed"
+                color = (255, 0, 0)  # 红色
+            else:
+                text = f"New UAV {self.topology_change['affected_agent']} Added"
+                color = (0, 255, 0)  # 绿色
+            
+            text_surface = font.render(text, True, color)
+            text_rect = text_surface.get_rect()
+            text_rect.topright = (self.width - 10, 10)
+            self.screen.blit(text_surface, text_rect)
 
     def close(self):
         if self.screen is not None:
