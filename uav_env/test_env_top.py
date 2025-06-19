@@ -29,7 +29,7 @@ def test_topology_changes(render_mode='human'):
 
     # 测试阶段1：正常运行
     print("\n第一阶段：系统正常运行")
-    for step in range(50):  # 先让系统运行一段时间达到稳定
+    for step in range(100):  # 先让系统运行一段时间达到稳定
         # 确保动作是float32类型
         actions = {
             f"agent_{i}": env.action_space[i].sample().astype(np.float32) 
