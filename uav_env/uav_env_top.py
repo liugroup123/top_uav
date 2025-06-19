@@ -561,45 +561,45 @@ class UAVEnv(gym.Env):
             pygame.draw.circle(self.screen, (0, 255, 0), (sx, sy), 5)
 
         # 存储无人机屏幕位置用于连线
-        screen_positions = {}  # 使用字典存储，键为UAV索引
+        screen_positions = {}
 
-        # 首先绘制所有UAV
+        # 绘制所有UAV
         for i, apos in enumerate(self.agent_pos):
             sx, sy = to_screen(apos)
             screen_positions[i] = (sx, sy)
 
+            # 绘制探测半径圆圈（实线）
+            coverage_radius_px = int((self.coverage_radius / fixed_cam) * (self.width/2))
+            pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), coverage_radius_px, 1)
+            
+            # 绘制通信半径圆圈（蓝色虚线）
+            comm_radius_px = int((self.communication_radius / fixed_cam) * (self.width/2))
+            # 创建虚线效果
+            num_segments = 80
+            for seg in range(num_segments):
+                if seg % 2 == 0:
+                    start_angle = 2 * np.pi * seg / num_segments
+                    end_angle = 2 * np.pi * (seg + 1) / num_segments
+                    start_pos = (
+                        sx + int(comm_radius_px * np.cos(start_angle)),
+                        sy + int(comm_radius_px * np.sin(start_angle))
+                    )
+                    end_pos = (
+                        sx + int(comm_radius_px * np.cos(end_angle)),
+                        sy + int(comm_radius_px * np.sin(end_angle))
+                    )
+                    pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)
+
+            # 只有UAV中心点的颜色根据状态改变
             if i in self.active_agents:
-                # 活跃的UAV用蓝色
-                color = (0, 0, 255)  # 蓝色
-                # 绘制探测半径圆圈（实线）
-                coverage_radius_px = int((self.coverage_radius / fixed_cam) * (self.width/2))
-                pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), coverage_radius_px, 1)
-                
-                # 绘制通信半径圆圈（蓝色虚线）
-                comm_radius_px = int((self.communication_radius / fixed_cam) * (self.width/2))
-                # 创建虚线效果
-                num_segments = 80
-                for seg in range(num_segments):
-                    if seg % 2 == 0:
-                        start_angle = 2 * np.pi * seg / num_segments
-                        end_angle = 2 * np.pi * (seg + 1) / num_segments
-                        start_pos = (
-                            sx + int(comm_radius_px * np.cos(start_angle)),
-                            sy + int(comm_radius_px * np.sin(start_angle))
-                        )
-                        end_pos = (
-                            sx + int(comm_radius_px * np.cos(end_angle)),
-                            sy + int(comm_radius_px * np.sin(end_angle))
-                        )
-                        pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)
+                color = (0, 0, 255)  # 活跃UAV用蓝色
             else:
-                # 失效的UAV用灰色，且不绘制半径圈
-                color = (128, 128, 128)  # 灰色
+                color = (128, 128, 128)  # 失效UAV用灰色
             
             # 绘制UAV本体
             pygame.draw.circle(self.screen, color, (sx, sy), 8)
 
-        # 然后绘制连接线（只在活跃UAV之间）
+        # 只在活跃UAV之间绘制红色连接线
         for i in range(self.num_agents):
             if i not in self.active_agents:
                 continue  # 跳过非活跃UAV
@@ -608,19 +608,18 @@ class UAVEnv(gym.Env):
                 if j not in self.active_agents:
                     continue  # 跳过非活跃UAV
                 
-                # 只有当两个UAV都是活跃的时才检查连接
+                # 只在活跃UAV之间检查连接
                 dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
                 if dist <= self.communication_radius:
-                    # 画红色连接线
                     pygame.draw.line(
                         self.screen, 
-                        (255, 0, 0),  # 红色
+                        (255, 0, 0),  # 红色连接线
                         screen_positions[i], 
                         screen_positions[j], 
-                        2  # 线宽
+                        1  # 线宽
                     )
 
-        # 如果正在发生拓扑变化，添加文本提示
+        # 显示拓扑变化状态
         if self.topology_change['in_progress']:
             font = pygame.font.Font(None, 36)
             if self.topology_change['change_type'] == 'failure':
