@@ -248,59 +248,57 @@ class UAVEnv(gym.Env):
     观察函数相关的函数
     """
     def _get_obs(self):
-        """获取观察，优化GPU使用和计算效率"""
+        """修改后的观察获取，适应动态UAV数量"""
         obs = []
 
-        # 优化1：一次性转换到GPU，减少数据传输
-        with torch.cuda.amp.autocast():  # 使用混合精度加速
-            uav_features = torch.tensor(
-                np.concatenate([self.agent_pos, self.agent_vel], axis=1),
-                dtype=torch.float32,
-                device=self.device
-            )
-            target_features = torch.tensor(
-                self.target_pos,
-                dtype=torch.float32,
-                device=self.device
-            )
+        # 基础特征：位置和速度
+        active_positions = self.agent_pos[self.active_agents]
+        active_velocities = self.agent_vel[self.active_agents]
+        
+        uav_features = torch.tensor(
+            np.concatenate([active_positions, active_velocities], axis=1),
+            dtype=torch.float32,
+            device=self.device
+        )
+        target_features = torch.tensor(
+            self.target_pos,
+            dtype=torch.float32,
+            device=self.device
+        )
 
-            # GAT前向传播
-            if self.training:
+        # GAT前向传播
+        if self.training:
+            gat_features = self.gat_network(
+                uav_features,
+                target_features,
+                self._get_active_adj_matrix(),  # 只使用活跃UAV的邻接矩阵
+                self.target_adj
+            )
+        else:
+            with torch.no_grad():
                 gat_features = self.gat_network(
                     uav_features,
                     target_features,
-                    self.uav_adj,
+                    self._get_active_adj_matrix(),
                     self.target_adj
                 )
-            else:
-                with torch.no_grad():
-                    gat_features = self.gat_network(
-                        uav_features,
-                        target_features,
-                        self.uav_adj,
-                        self.target_adj
-                    )
-        
-        # 优化2：批量处理GAT特征
-        gat_features_np = gat_features.detach().cpu().numpy()
 
-        # 优化3：预计算相对目标位置
-        relative_targets = self.target_pos[None, :, :] - self.agent_pos[:, None, :]
-        relative_targets = relative_targets.reshape(self.num_agents, -1)
+        gat_features_np = gat_features.detach().cpu().numpy()
 
         # 为每个UAV生成观察
         for i in range(self.num_agents):
             if i in self.active_agents:
                 obs_i = np.concatenate([
-                    self.agent_pos[i],          # 位置
-                    self.agent_vel[i],          # 速度
-                    relative_targets[i],        # 预计算的相对目标位置
-                    self._get_neighbor_info(i), # 邻居信息
-                    gat_features_np[i],        # GAT特征
-                    self._get_topology_info()   # 拓扑变化信息
+                    self.agent_pos[i],
+                    self.agent_vel[i],
+                    self._get_relative_targets(i),
+                    self._get_neighbor_info(i),
+                    gat_features_np[self.active_agents.index(i)],  # 使用活跃UAV的索引
+                    self._get_topology_info()
                 ])
                 obs.append(obs_i.astype(np.float32))
             else:
+                # 对于非活跃UAV，返回零向量
                 obs.append(np.zeros(self.observation_space[0].shape, dtype=np.float32))
 
         return obs
@@ -449,46 +447,40 @@ class UAVEnv(gym.Env):
         return 0.0
 
     def _compute_rewards(self):
-        """
-        计算总奖励
-        Returns:
-            list: 每个智能体的奖励列表
-        """
-        # 计算全局组件（所有智能体共享）
+        """修改后的奖励计算，只考虑活跃UAV"""
         coverage_reward = self._compute_coverage_reward()
         connectivity_reward = self._compute_connectivity_reward()
         stability_reward = self._compute_stability_reward()
-        
-        # 添加拓扑变化相关的奖励
         reorganization_reward = self._compute_reorganization_reward()
         
         rewards = []
         for i in range(self.num_agents):
-            # 计算个体组件
-            energy_reward = self._compute_energy_efficiency_reward(i, 
-                self.prev_actions[i])
-            boundary_reward = self._compute_boundary_penalty(i)
-            
-            # 合并所有奖励组件
-            total_reward = (
-                coverage_reward +
-                connectivity_reward +
-                stability_reward +
-                energy_reward +
-                boundary_reward +
-                reorganization_reward
-            )
+            if i in self.active_agents:
+                energy_reward = self._compute_energy_efficiency_reward(i, self.prev_actions[i])
+                boundary_reward = self._compute_boundary_penalty(i)
+                
+                total_reward = (
+                    coverage_reward +
+                    connectivity_reward +
+                    stability_reward +
+                    energy_reward +
+                    boundary_reward +
+                    reorganization_reward
+                )
+            else:
+                total_reward = 0.0  # 非活跃UAV没有奖励
             
             rewards.append(total_reward)
-            
+        
         return rewards
 
     def calculate_coverage_complete(self):
+        """修改后的覆盖率计算，只考虑活跃UAV"""
         covered_flags = []
         for target in self.target_pos:
             covered = False
-            for agent in self.agent_pos:
-                distance = np.linalg.norm(target - agent)
+            for agent_idx in self.active_agents:  # 只考虑活跃UAV
+                distance = np.linalg.norm(target - self.agent_pos[agent_idx])
                 if distance <= self.coverage_radius:
                     covered = True
                     break
@@ -498,22 +490,25 @@ class UAVEnv(gym.Env):
         total_targets = len(self.target_pos)
         coverage_rate = covered_count / total_targets if total_targets > 0 else 0
 
-        num_agents = self.num_agents
-        adjacency_matrix = np.zeros((num_agents, num_agents), dtype=bool)
-        for i in range(num_agents):
-            for j in range(i + 1, num_agents):
-                distance = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+        # 只考虑活跃UAV的连通性
+        active_num = len(self.active_agents)
+        adjacency_matrix = np.zeros((active_num, active_num), dtype=bool)
+        for i, agent_i in enumerate(self.active_agents):
+            for j, agent_j in enumerate(self.active_agents[i + 1:], i + 1):
+                distance = np.linalg.norm(self.agent_pos[agent_i] - self.agent_pos[agent_j])
                 if distance <= self.communication_radius:
                     adjacency_matrix[i, j] = True
                     adjacency_matrix[j, i] = True
 
-        visited = [False] * num_agents
+        visited = [False] * active_num
         def dfs(idx):
             visited[idx] = True
             for j, connected in enumerate(adjacency_matrix[idx]):
                 if connected and not visited[j]:
                     dfs(j)
-        dfs(0)
+
+        if active_num > 0:  # 确保有活跃UAV
+            dfs(0)
         fully_connected = all(visited)
         unconnected_count = visited.count(False)
 
@@ -782,4 +777,23 @@ class UAVEnv(gym.Env):
         self.gat_network.eval()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()  # 清理GPU缓存
+
+    def random_fail_uav(self):
+        """随机选择一个活跃的UAV进行失效"""
+        if len(self.active_agents) > 1:  # 确保至少保留一个UAV
+            fail_idx = np.random.choice(self.active_agents)
+            return self.fail_uav(fail_idx)
+        return False
+
+    def _get_active_adj_matrix(self):
+        """获取只包含活跃UAV的邻接矩阵"""
+        active_positions = torch.tensor(
+            self.agent_pos[self.active_agents],
+            dtype=torch.float32,
+            device=self.device
+        )
+        dists = torch.cdist(active_positions, active_positions)
+        adj_matrix = (dists <= self.communication_radius).float()
+        adj_matrix.fill_diagonal_(0)
+        return adj_matrix
 # 
