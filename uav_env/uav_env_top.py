@@ -21,7 +21,9 @@ class UAVEnv(gym.Env):
         render_mode=None,
         screen_size=(700, 700),
         render_fps=60,
-        dt=0.1
+        dt=0.1,
+        curriculum_level=0,  # 课程学习级别
+        enable_topology_change=False  # 是否启用拓扑变化
     ):
         super().__init__()
         self.num_agents = num_agents
@@ -162,24 +164,44 @@ class UAVEnv(gym.Env):
             torch.backends.cudnn.benchmark = True
             torch.cuda.empty_cache()
 
+        # 添加拓扑变化相关参数
+        self.curriculum_level = curriculum_level  # 0: 基础阶段, 1: 拓扑变化阶段
+        self.enable_topology_change = enable_topology_change
+        
+        # 拓扑变化参数
+        self.topology_params = {
+            'change_interval': 50,    # 拓扑变化间隔步数
+            'change_prob': 0.5,       # 在间隔步数时发生变化的概率
+            'recovery_time': 20       # 失效后多久添加新UAV
+        }
+        
+        # 记录拓扑变化状态
+        self.last_change_step = 0
+        self.pending_addition = False
+        self.addition_step = 0
+
         self.reset()
 
     def reset(self, seed=None):
+        """重置环境，简化初始化"""
         self.curr_step = 0
         self.max_coverage_rate = 0.0
+        self.last_change_step = 0
+        self.pending_addition = False
+        self.addition_step = 0
 
         # 初始化随机种子
         if seed is not None:
             np.random.seed(seed)
 
-        # 初始化无人机位置（确保使用float32）
+        # 初始化无人机位置
         self.agent_pos = []
         bottom_y = -self.world_size + 0.15
         spacing = 2 * self.world_size / (self.num_agents + 1)
         for i in range(self.num_agents):
             x = -self.world_size + (i + 1) * spacing
             self.agent_pos.append([x, bottom_y])
-        self.agent_pos = np.array(self.agent_pos, dtype=np.float32)  # 明确指定float32
+        self.agent_pos = np.array(self.agent_pos, dtype=np.float32)
 
         # 初始化速度
         self.agent_vel = np.zeros((self.num_agents, 2), dtype=np.float32)
@@ -189,7 +211,27 @@ class UAVEnv(gym.Env):
             -self.world_size*0.85, 
             self.world_size*0.85, 
             (self.num_targets, 2)
-        ).astype(np.float32)  # 确保使用float32
+        ).astype(np.float32)
+
+        # 重置活跃UAV列表
+        self.active_agents = list(range(self.num_agents))
+        self.uav_states = {
+            i: {
+                'active': True,
+                'last_position': None,
+                'last_velocity': None,
+                'failure_step': None
+            } for i in range(self.num_agents)
+        }
+        
+        # 重置拓扑变化状态
+        self.topology_change = {
+            'in_progress': False,
+            'change_type': None,
+            'affected_agent': None,
+            'start_step': None,
+            'pre_change_coverage': None
+        }
 
         # 构建初始邻接矩阵
         self._build_adjacency_matrices()
@@ -203,7 +245,10 @@ class UAVEnv(gym.Env):
 
 
     def step(self, action_dict):
-        """优化的步进函数"""
+        """优化的步进函数，集成简化的拓扑变化"""
+        # 检查是否需要进行拓扑变化
+        self.check_topology_change()
+        
         # 优化1：预分配动作数组
         actions = np.zeros((self.num_agents, 2), dtype=np.float32)
         
@@ -714,12 +759,12 @@ class UAVEnv(gym.Env):
             # 记录失效状态和最后位置
             self.uav_states[uav_idx]['active'] = False
             self.uav_states[uav_idx]['last_position'] = self.agent_pos[uav_idx].copy()
-            self.uav_states[uav_idx]['last_velocity'] = np.zeros_like(self.agent_vel[uav_idx])  # 失效后速度为0
+            self.uav_states[uav_idx]['last_velocity'] = np.zeros_like(self.agent_vel[uav_idx])
             self.uav_states[uav_idx]['failure_step'] = self.curr_step
             
             # 从活跃列表中移除
             self.active_agents.remove(uav_idx)
-            print(f"UAV {uav_idx} 已失效，当前位置: {self.uav_states[uav_idx]['last_position']}")
+            print(f"步骤 {self.curr_step}: UAV {uav_idx} 失效，当前位置: {self.uav_states[uav_idx]['last_position']}")
             
             # 记录拓扑变化状态
             self.topology_change = {
@@ -736,28 +781,32 @@ class UAVEnv(gym.Env):
     def add_uav(self, position=None):
         """添加新的UAV"""
         # 找到第一个非活跃的UAV索引
-        for i in range(self.num_agents):
-            if i not in self.active_agents:
-                # 设置初始位置
-                if position is None:
-                    position = self._get_safe_spawn_position()
-                
-                # 激活UAV
-                self.agent_pos[i] = np.array(position, dtype=np.float32)
-                self.agent_vel[i] = np.zeros(2, dtype=np.float32)
-                self.uav_states[i]['active'] = True
-                self.active_agents.append(i)
-                
-                # 记录拓扑变化状态
-                self.topology_change = {
-                    'in_progress': True,
-                    'change_type': 'addition',
-                    'affected_agent': i,
-                    'start_step': self.curr_step,
-                    'pre_change_coverage': self.calculate_coverage_complete()[0]
-                }
-                
-                return i
+        inactive_uavs = [i for i in range(self.num_agents) if i not in self.active_agents]
+        if inactive_uavs:
+            new_idx = inactive_uavs[0]
+            
+            # 设置初始位置
+            if position is None:
+                position = self._get_safe_spawn_position()
+            
+            # 激活UAV
+            self.agent_pos[new_idx] = np.array(position, dtype=np.float32)
+            self.agent_vel[new_idx] = np.zeros(2, dtype=np.float32)
+            self.uav_states[new_idx]['active'] = True
+            self.active_agents.append(new_idx)
+            
+            print(f"步骤 {self.curr_step}: 新增 UAV {new_idx}，位置: {position}")
+            
+            # 记录拓扑变化状态
+            self.topology_change = {
+                'in_progress': True,
+                'change_type': 'addition',
+                'affected_agent': new_idx,
+                'start_step': self.curr_step,
+                'pre_change_coverage': self.calculate_coverage_complete()[0]
+            }
+            
+            return new_idx
         return None
 
     def _get_safe_spawn_position(self):
@@ -834,4 +883,27 @@ class UAVEnv(gym.Env):
         dists = torch.cdist(active_positions, target_positions)
         adj_matrix = (dists <= self.coverage_radius).float()
         return adj_matrix
+
+    def check_topology_change(self):
+        """检查是否需要进行拓扑变化"""
+        if not self.enable_topology_change or self.curriculum_level == 0:
+            return
+        
+        # 检查是否有待添加的UAV
+        if self.pending_addition and self.curr_step >= self.addition_step:
+            self.add_uav()
+            self.pending_addition = False
+            return
+        
+        # 检查是否需要触发新的拓扑变化
+        if (self.curr_step - self.last_change_step >= self.topology_params['change_interval'] and 
+                np.random.random() < self.topology_params['change_prob']):
+            # 随机选择一架活跃的UAV失效
+            if len(self.active_agents) > 1:  # 确保至少保留一个UAV
+                fail_idx = np.random.choice(self.active_agents)
+                if self.fail_uav(fail_idx):
+                    self.last_change_step = self.curr_step
+                    # 安排后续添加新UAV
+                    self.pending_addition = True
+                    self.addition_step = self.curr_step + self.topology_params['recovery_time']
 # 
