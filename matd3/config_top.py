@@ -1,0 +1,24 @@
+CONFIG = {
+    "render_mode": "rgb_array",
+    # "render_mode": "None",
+    "num_episodes": 10000,
+    "max_steps_per_episode": 200,
+    "seed": 0,
+    "actor_lr": 1e-4,
+    "critic_lr": 1e-3,
+    "gamma": 0.95,
+    "tau": 0.01,
+    "batch_size": 64,
+    "buffer_size": int(1e5),
+    "policy_delay": 2,     # MATD3 特有
+    "noise_std": 0.1,      # MATD3 特有
+    "noise_clip": 0.5,     # MATD3 特有
+    "initial_random_steps": 1000,
+    "noise_decay_rate": 0.995,
+    "curriculum_level": 0,            # 0: 基础阶段, 1: 拓扑变化阶段
+    "enable_topology_change": False,  # 是否启用拓扑变化
+    "curriculum_schedule": {
+        "episode_thresholds": [2000, 4000],  # 在第2000和4000轮启用不同级别的课程
+        "coverage_thresholds": [0.7, 0.8]    # 覆盖率达到70%和80%时启用不同级别的课程
+    }
+}

@@ -16,10 +16,10 @@ import imageio
 import time
 
 # 导入本地模块
-from mpe_uav.uav_env.uav_env import UAVEnv
+from mpe_uav.uav_env.uav_env_top import UAVEnv  # 修改为使用支持拓扑变化的环境
 from matd3_no_gat import MATD3, ReplayBuffer
 from utils import OUNoise
-from config import CONFIG
+from config_top import CONFIG
 
 # 获取当前文件的父目录（matd3_master 所在目录）
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,23 +46,31 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     
-    writer = SummaryWriter(log_dir=runs_dir)  # TensorBoard 日志文件夹
+    writer = SummaryWriter(log_dir=runs_dir)
     render_mode = CONFIG["render_mode"]
     num_episodes = CONFIG["num_episodes"]
     max_steps_per_episode = CONFIG["max_steps_per_episode"]
-    initial_random_steps = CONFIG["initial_random_steps"]  # 初始随机步骤
+    initial_random_steps = CONFIG["initial_random_steps"]
+    
+    # 拓扑变化相关参数
+    curriculum_level = CONFIG.get("curriculum_level", 0)  # 课程学习级别
+    enable_topology_change = CONFIG.get("enable_topology_change", False)  # 是否启用拓扑变化
     
     # 设置随机种子
-    seed = random.randint(0, 1000)  # 随机种子
+    seed = random.randint(0, 1000)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    random.seed(seed)  # 也设置Python的随机种子
+    random.seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
 
-    # 初始化环境
-    env = UAVEnv(render_mode=render_mode)
+    # 初始化环境，传入拓扑变化参数
+    env = UAVEnv(
+        render_mode=render_mode, 
+        curriculum_level=curriculum_level,
+        enable_topology_change=enable_topology_change
+    )
 
     obs, _ = env.reset(seed=seed)
     # 获取智能体列表
@@ -122,34 +130,37 @@ def main():
     print(f"初始随机采样 {initial_random_steps} 步...")
     obs, _ = env.reset()
     for step in tqdm(range(initial_random_steps)):
-        # 完全随机动作
-        actions = {agent: np.random.uniform(-1, 1, env.get_action_space(agent).shape) for agent in agents if agent in obs}
+        # 只为活跃的智能体生成动作
+        actions = {agent: np.random.uniform(-1, 1, env.get_action_space(agent).shape) 
+                  for agent in agents if agent in obs and agent.split("_")[1] in [str(i) for i in env.active_agents]}
+        
         next_obs, rewards, dones, truncated, infos = env.step(actions)
         
-        # 将经验添加到 Replay Buffer
-        all_agents = set(agents) | set(obs.keys()) | set(next_obs.keys())
-        obs_filled = {agent: obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
-        actions_filled = {agent: actions.get(agent, np.zeros(action_dim)) for agent in all_agents}
-        rewards_filled = {agent: rewards.get(agent, 0.0) for agent in all_agents}
-        next_obs_filled = {agent: next_obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
-        dones_filled = {agent: dones.get(agent, True) for agent in all_agents}
+        # 将经验添加到 Replay Buffer - 只处理活跃智能体
+        active_agents = [f"agent_{i}" for i in env.active_agents]
+        obs_filled = {agent: obs.get(agent, np.zeros(obs_dim)) for agent in agents}
+        actions_filled = {agent: actions.get(agent, np.zeros(action_dim)) for agent in agents}
+        rewards_filled = {agent: rewards.get(agent, 0.0) for agent in agents}
+        next_obs_filled = {agent: next_obs.get(agent, np.zeros(obs_dim)) for agent in agents}
+        dones_filled = {agent: dones.get(agent, True) for agent in agents}
         
         replay_buffer.add(obs_filled, actions_filled, rewards_filled, next_obs_filled, dones_filled)
         
         obs = next_obs
-        if all([dones.get(agent, True) for agent in agents]):
+        if all([dones.get(agent, True) for agent in active_agents]):
             obs, _ = env.reset()
     
     print("开始正式训练...")
     for episode in tqdm(range(num_episodes), desc="训练进度"):
         # 随机种子
-        episode_seed = random.randint(0, 1000)  # 每一轮都设置一个新的随机种子
+        episode_seed = random.randint(0, 1000)
         # 每隔 FRAME_SAVE_INTERVAL 轮保存一次视频，还有最后 final_times 轮保存视频
         record_video = (episode % FRAME_SAVE_INTERVAL == 0) or (episode >= num_episodes - final_times)
         obs, _ = env.reset(seed=episode_seed)
         episode_reward = 0
         frames = []
-        max_coverage_rate = 0  # 每一轮重置最大覆盖率
+        max_coverage_rate = 0
+        topology_changes = []  # 记录拓扑变化
         
         # 动态调整噪声
         current_noise = noise_std * (noise_decay_rate ** episode)
@@ -160,19 +171,21 @@ def main():
         for step in range(max_steps_per_episode):
             step_count += 1
             
-            # 使用 MATD3 的 select_action 方法选择动作
-            actions = matd3.select_action(obs, noise=current_noise)
+            # 获取当前活跃的智能体
+            active_agents = [f"agent_{i}" for i in env.active_agents]
+            
+            # 只为活跃的智能体选择动作
+            actions = matd3.select_action({k: v for k, v in obs.items() if k in active_agents}, noise=current_noise)
 
             next_obs, rewards, dones, truncated, infos = env.step(actions)
             episode_reward += sum(rewards.values())
 
-            # 将经验添加到 Replay Buffer
-            all_agents = set(agents) | set(obs.keys()) | set(next_obs.keys())
-            obs_filled = {agent: obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
-            actions_filled = {agent: actions.get(agent, np.zeros(action_dim)) for agent in all_agents}
-            rewards_filled = {agent: rewards.get(agent, 0.0) for agent in all_agents}
-            next_obs_filled = {agent: next_obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
-            dones_filled = {agent: dones.get(agent, True) for agent in all_agents}
+            # 将经验添加到 Replay Buffer - 处理所有智能体，非活跃的用零填充
+            obs_filled = {agent: obs.get(agent, np.zeros(obs_dim)) for agent in agents}
+            actions_filled = {agent: actions.get(agent, np.zeros(action_dim)) for agent in agents}
+            rewards_filled = {agent: rewards.get(agent, 0.0) for agent in agents}
+            next_obs_filled = {agent: next_obs.get(agent, np.zeros(obs_dim)) for agent in agents}
+            dones_filled = {agent: dones.get(agent, True) for agent in agents}
 
             try:
                 replay_buffer.add(obs_filled, actions_filled, rewards_filled, next_obs_filled, dones_filled)
@@ -190,14 +203,22 @@ def main():
                 actor_losses.append(actor_loss)
                 critic_losses.append(critic_loss)
 
-            # 如果所有智能体都完成，则提前结束
-            if all([dones.get(agent, True) for agent in agents]):
+            # 记录拓扑变化
+            if env.topology_change['in_progress']:
+                topology_changes.append({
+                    'step': step,
+                    'type': env.topology_change['change_type'],
+                    'agent': env.topology_change['affected_agent']
+                })
+
+            # 如果所有活跃智能体都完成，则提前结束
+            if all([dones.get(agent, True) for agent in active_agents]):
                 break
 
             obs = next_obs
 
             # 保存当前帧到视频（根据 record_video）
-            if record_video and step % 2 == 0:  # 每隔2步保存一帧，减少内存使用
+            if record_video and step % 2 == 0:
                 frame = env.render()
                 frame = cv2.resize(frame, (704, 704))
                 frames.append(frame)
@@ -207,10 +228,12 @@ def main():
         max_coverage_rate = max(coverage_rate, max_coverage_rate)
 
         # 将覆盖率记录到 TensorBoard
-        writer.add_scalar('Coverage Rate', coverage_rate, episode)      # 正常的覆盖率
-        writer.add_scalar('Max Coverage Rate', max_coverage_rate, episode)  # 最大的覆盖率
-        writer.add_scalar('Unconnected Uav', unconnected_uav, episode)  # 未连接的无人机数量
-        writer.add_scalar('Noise Level', current_noise, episode)        # 记录噪声水平
+        writer.add_scalar('Coverage Rate', coverage_rate, episode)
+        writer.add_scalar('Max Coverage Rate', max_coverage_rate, episode)
+        writer.add_scalar('Unconnected Uav', unconnected_uav, episode)
+        writer.add_scalar('Noise Level', current_noise, episode)
+        writer.add_scalar('Active UAVs', len(env.active_agents), episode)  # 记录活跃UAV数量
+        writer.add_scalar('Topology Changes', len(topology_changes), episode)  # 记录拓扑变化次数
 
         total_rewards.append(episode_reward)
         episode_time = time.time() - episode_start_time
@@ -223,6 +246,11 @@ def main():
             print(f"最大覆盖率: {max_coverage_rate*100:.2f}%")
             print(f"当前覆盖率: {coverage_rate * 100:.2f}%")
             print(f"步骤数: {step_count}, 噪声水平: {current_noise:.4f}")
+            print(f"活跃UAV数量: {len(env.active_agents)}/{env.num_agents}")
+            if topology_changes:
+                print(f"拓扑变化: {len(topology_changes)}次")
+                for change in topology_changes[-3:]:  # 只显示最近的3次变化
+                    print(f"  步骤{change['step']}: {change['type']} UAV {change['agent']}")
             if actor_losses and critic_losses:
                 print(f"Actor损失: {actor_losses[-1]:.4f}, Critic损失: {critic_losses[-1]:.4f}")
 
