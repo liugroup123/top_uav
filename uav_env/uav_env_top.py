@@ -6,7 +6,7 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from mpe_uav.uav_env.gat_model import UAVAttentionNetwork, create_adjacency_matrices
+from gat_model import UAVAttentionNetwork, create_adjacency_matrices
 import pdb
 
 class UAVEnv(gym.Env):
@@ -21,7 +21,14 @@ class UAVEnv(gym.Env):
         render_mode=None,
         screen_size=(700, 700),
         render_fps=60,
-        dt=0.1
+        dt=0.1,
+        experiment_type='normal',  # 实验类型参数
+        # 新增拓扑变化控制参数
+        topology_change_interval=None,  # 拓扑变化间隔（步数）
+        topology_change_probability=None,  # 随机模式变化概率
+        min_active_agents=None,  # 最少保持的UAV数量
+        max_active_agents=None,  # 最多UAV数量
+        initial_active_ratio=None  # UAV添加模式的初始活跃比例
     ):
         super().__init__()
         self.num_agents = num_agents
@@ -31,10 +38,26 @@ class UAVEnv(gym.Env):
         self.communication_radius = communication_radius
         self.max_steps = max_steps
         self.curr_step = 0
-        self.dt = dt  
+        self.dt = dt
         self.max_coverage_rate = 0.0
         self.max_accel=1.5
         self.max_speed=2.0
+
+        # 实验类型配置
+        self.experiment_type = experiment_type  # 'normal', 'uav_loss', 'uav_addition', 'random_mixed'
+        self._validate_experiment_type()
+
+        # 保存用户自定义参数
+        self.custom_topology_params = {
+            'change_interval': topology_change_interval,
+            'change_probability': topology_change_probability,
+            'min_agents': min_active_agents,
+            'max_agents': max_active_agents,
+            'initial_active_ratio': initial_active_ratio
+        }
+
+        # 拓扑变化配置
+        self.topology_config = self._init_topology_config()
 
         # 渲染配置
         self.render_mode = render_mode
@@ -119,16 +142,8 @@ class UAVEnv(gym.Env):
         self.coverage_history = []
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
 
-        # 初始时所有UAV都是活跃的
-        self.active_agents = list(range(num_agents))
-        self.uav_states = {
-            i: {
-                'active': True,           # 初始都是活跃的
-                'last_position': None,    # 失效时的位置
-                'last_velocity': None,    # 失效时的速度
-                'failure_step': None      # 失效的时间步
-            } for i in range(num_agents)
-        }
+        # 根据实验类型初始化UAV状态
+        self._init_uav_states()
         
         # 添加拓扑变化相关的奖励参数
         self.reward_params.update({
@@ -231,6 +246,10 @@ class UAVEnv(gym.Env):
         self._build_adjacency_matrices()
 
         self.curr_step += 1
+
+        # 根据实验类型触发拓扑变化
+        self.trigger_topology_change()
+
         obs_list = self._get_obs()
         rewards_list = self._compute_rewards()
         dones_list = [self.curr_step >= self.max_steps] * self.num_agents
@@ -454,16 +473,22 @@ class UAVEnv(gym.Env):
         """计算重组奖励"""
         if not self.topology_change['in_progress']:
             return 0.0
-        
+
         if self.topology_change['change_type'] == 'failure':
             # 计算失效后的覆盖率恢复程度
             current_coverage = self.calculate_coverage_complete()[0]
-            coverage_recovery = current_coverage / self.topology_change['pre_change_coverage']
-            
-            # 鼓励快速恢复覆盖率
-            recovery_reward = self.reward_params['reorganization_weight'] * coverage_recovery
+            pre_change_coverage = self.topology_change['pre_change_coverage']
+
+            # 避免除零错误
+            if pre_change_coverage is None or pre_change_coverage <= 0:
+                # 如果之前覆盖率为0，则直接使用当前覆盖率作为奖励
+                recovery_reward = self.reward_params['reorganization_weight'] * current_coverage
+            else:
+                coverage_recovery = current_coverage / pre_change_coverage
+                recovery_reward = self.reward_params['reorganization_weight'] * coverage_recovery
+
             return recovery_reward
-        
+
         return 0.0
 
     def _compute_rewards(self):
@@ -634,6 +659,17 @@ class UAVEnv(gym.Env):
                         1  # 线宽
                     )
 
+        # 显示实验类型信息
+        font = pygame.font.Font(None, 24)
+        experiment_text = f"实验类型: {self.experiment_type}"
+        text_surface = font.render(experiment_text, True, (0, 0, 0))
+        self.screen.blit(text_surface, (10, 10))
+
+        # 显示活跃UAV数量
+        active_count_text = f"活跃UAV: {len(self.active_agents)}/{self.num_agents}"
+        text_surface = font.render(active_count_text, True, (0, 0, 0))
+        self.screen.blit(text_surface, (10, 35))
+
         # 显示拓扑变化状态
         if self.topology_change['in_progress']:
             font = pygame.font.Font(None, 36)
@@ -643,7 +679,7 @@ class UAVEnv(gym.Env):
             else:
                 text = f"New UAV {self.topology_change['affected_agent']} Added"
                 color = (0, 255, 0)  # 绿色
-            
+
             text_surface = font.render(text, True, color)
             text_rect = text_surface.get_rect()
             text_rect.topright = (self.width - 10, 10)
@@ -834,4 +870,176 @@ class UAVEnv(gym.Env):
         dists = torch.cdist(active_positions, target_positions)
         adj_matrix = (dists <= self.coverage_radius).float()
         return adj_matrix
-# 
+
+    def _validate_experiment_type(self):
+        """验证实验类型参数"""
+        valid_types = ['normal', 'uav_loss', 'uav_addition', 'random_mixed']
+        if self.experiment_type not in valid_types:
+            raise ValueError(f"实验类型必须是以下之一: {valid_types}, 当前值: {self.experiment_type}")
+
+    def _init_uav_states(self):
+        """根据实验类型初始化UAV状态"""
+        # 基础UAV状态初始化
+        self.uav_states = {
+            i: {
+                'active': True,           # 初始都是活跃的
+                'last_position': None,    # 失效时的位置
+                'last_velocity': None,    # 失效时的速度
+                'failure_step': None      # 失效的时间步
+            } for i in range(self.num_agents)
+        }
+
+        if self.experiment_type == 'uav_addition':
+            # UAV添加模式：开始时只激活部分UAV，为后续添加留出空间
+            if self.custom_topology_params['initial_active_ratio'] is not None:
+                # 使用用户指定的比例
+                ratio = max(0.3, min(0.8, self.custom_topology_params['initial_active_ratio']))  # 限制在30%-80%
+                initial_active_count = max(3, int(self.num_agents * ratio))
+            else:
+                # 使用默认逻辑
+                initial_active_count = max(3, self.num_agents - 2)  # 至少3个，最多num_agents-2个
+
+            self.active_agents = list(range(initial_active_count))
+
+            # 将其余UAV设为非活跃状态
+            for i in range(initial_active_count, self.num_agents):
+                self.uav_states[i]['active'] = False
+        else:
+            # 其他模式：初始时所有UAV都是活跃的
+            self.active_agents = list(range(self.num_agents))
+
+    def _init_topology_config(self):
+        """初始化拓扑变化配置"""
+        # 默认配置
+        config = {
+            'enabled': self.experiment_type != 'normal',
+            'change_interval': 50,  # 拓扑变化的间隔步数
+            'change_probability': 0.02,  # 随机模式下每步的变化概率
+            'min_agents': 3,  # 最少保持的UAV数量
+            'max_agents': self.num_agents,  # 最多UAV数量
+            'last_change_step': 0,  # 上次变化的步数
+        }
+
+        # 根据实验类型调整默认配置
+        if self.experiment_type == 'uav_loss':
+            config['change_type'] = 'loss_only'
+            config['change_interval'] = 80  # 损失模式间隔更长
+        elif self.experiment_type == 'uav_addition':
+            config['change_type'] = 'addition_only'
+            config['change_interval'] = 60  # 添加模式间隔适中
+        elif self.experiment_type == 'random_mixed':
+            config['change_type'] = 'random'
+            config['change_probability'] = 0.015  # 随机模式概率稍低
+
+        # 应用用户自定义参数（如果提供）
+        if self.custom_topology_params['change_interval'] is not None:
+            config['change_interval'] = self.custom_topology_params['change_interval']
+
+        if self.custom_topology_params['change_probability'] is not None:
+            config['change_probability'] = self.custom_topology_params['change_probability']
+
+        if self.custom_topology_params['min_agents'] is not None:
+            config['min_agents'] = max(1, self.custom_topology_params['min_agents'])  # 至少1个
+
+        if self.custom_topology_params['max_agents'] is not None:
+            config['max_agents'] = min(self.num_agents, self.custom_topology_params['max_agents'])
+
+        return config
+
+    def trigger_topology_change(self):
+        """根据实验类型触发拓扑变化"""
+        if not self.topology_config['enabled']:
+            return False
+
+        # 检查是否应该触发变化
+        should_change = False
+
+        if self.experiment_type == 'random_mixed':
+            # 随机模式：基于概率触发
+            should_change = np.random.random() < self.topology_config['change_probability']
+        else:
+            # 固定间隔模式
+            steps_since_last = self.curr_step - self.topology_config['last_change_step']
+            should_change = steps_since_last >= self.topology_config['change_interval']
+
+        if not should_change:
+            return False
+
+        # 执行拓扑变化
+        change_executed = False
+
+        if self.experiment_type == 'uav_loss':
+            change_executed = self._execute_uav_loss()
+        elif self.experiment_type == 'uav_addition':
+            change_executed = self._execute_uav_addition()
+        elif self.experiment_type == 'random_mixed':
+            change_executed = self._execute_random_change()
+
+        if change_executed:
+            self.topology_config['last_change_step'] = self.curr_step
+
+        return change_executed
+
+    def _execute_uav_loss(self):
+        """执行UAV损失"""
+        if len(self.active_agents) <= self.topology_config['min_agents']:
+            return False
+
+        # 随机选择一个UAV失效
+        fail_idx = np.random.choice(self.active_agents)
+        success = self.fail_uav(fail_idx)
+
+        if success:
+            print(f"[实验模式: UAV损失] Step {self.curr_step}: UAV {fail_idx} 失效")
+
+        return success
+
+    def _execute_uav_addition(self):
+        """执行UAV添加"""
+        if len(self.active_agents) >= self.topology_config['max_agents']:
+            return False
+
+        # 添加新UAV
+        new_uav_idx = self.add_uav()
+
+        if new_uav_idx is not None:
+            print(f"[实验模式: UAV添加] Step {self.curr_step}: 添加新UAV {new_uav_idx}")
+            return True
+
+        return False
+
+    def _execute_random_change(self):
+        """执行随机变化（损失或添加）"""
+        # 50%概率选择损失或添加
+        if np.random.random() < 0.5:
+            # 尝试UAV损失
+            if len(self.active_agents) > self.topology_config['min_agents']:
+                return self._execute_uav_loss()
+        else:
+            # 尝试UAV添加
+            if len(self.active_agents) < self.topology_config['max_agents']:
+                return self._execute_uav_addition()
+
+        return False
+
+    def get_experiment_info(self):
+        """获取实验信息"""
+        return {
+            'experiment_type': self.experiment_type,
+            'topology_enabled': self.topology_config['enabled'],
+            'active_agents_count': len(self.active_agents),
+            'total_agents': self.num_agents,
+            'current_step': self.curr_step,
+            'last_change_step': self.topology_config['last_change_step'],
+            'topology_in_progress': self.topology_change['in_progress'],
+            'change_type': self.topology_change['change_type']
+        }
+
+    def set_experiment_type(self, experiment_type):
+        """动态设置实验类型"""
+        old_type = self.experiment_type
+        self.experiment_type = experiment_type
+        self._validate_experiment_type()
+        self.topology_config = self._init_topology_config()
+        print(f"实验类型已从 '{old_type}' 更改为 '{experiment_type}'")
+#

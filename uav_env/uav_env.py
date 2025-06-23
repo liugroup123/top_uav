@@ -6,7 +6,7 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from mpe_uav.uav_env.gat_model import UAVAttentionNetwork, create_adjacency_matrices
+from uav_env.gat_model import UAVAttentionNetwork, create_adjacency_matrices
 import pdb
 class UAVEnv(gym.Env):
     def __init__(

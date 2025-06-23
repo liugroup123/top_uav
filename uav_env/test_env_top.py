@@ -6,7 +6,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(project_root)
 
 # 修改这里：从 uav_env_top.py 导入环境
-from mpe_uav.uav_env.uav_env_top import UAVEnv  # 改用支持拓扑变化的环境
+from uav_env.uav_env_top import UAVEnv  # 改用支持拓扑变化的环境
 import pdb
 
 def test_topology_changes(render_mode='human'):
