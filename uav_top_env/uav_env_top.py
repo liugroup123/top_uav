@@ -7,7 +7,7 @@ from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
 from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
-from .config import ExperimentConfig, create_config, config_manager
+from config import ExperimentConfig, create_config, config_manager
 import pdb
 
 class UAVEnv(gym.Env):
@@ -1066,7 +1066,7 @@ class UAVEnv(gym.Env):
 
     def _load_config(self, config, config_file, *args):
         """加载配置"""
-        from .config import ExperimentConfig, create_config, config_manager
+        from config import ExperimentConfig, create_config, config_manager
 
         # 如果提供了配置对象
         if isinstance(config, ExperimentConfig):
@@ -1088,7 +1088,7 @@ class UAVEnv(gym.Env):
              topology_change_probability, min_active_agents, max_active_agents,
              initial_active_ratio) = args
 
-            from .config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
+            from config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
 
             # 创建默认配置并应用传入的参数
             env_config = EnvironmentConfig()
@@ -1131,4 +1131,105 @@ class UAVEnv(gym.Env):
         """从文件重新加载配置并重新初始化环境"""
         new_config = config_manager.load_config(filename)
         self.__init__(config=new_config)
+
+    # ========== GAT训练相关方法 ==========
+
+    def get_gat_parameters(self):
+        """获取GAT网络的参数，用于外部训练"""
+        return self.gat_network.parameters()
+
+    def get_gat_named_parameters(self):
+        """获取GAT网络的命名参数"""
+        return self.gat_network.named_parameters()
+
+    def get_gat_state_dict(self):
+        """获取GAT网络的状态字典"""
+        return self.gat_network.state_dict()
+
+    def load_gat_state_dict(self, state_dict):
+        """加载GAT网络的状态字典"""
+        self.gat_network.load_state_dict(state_dict)
+
+    def save_gat_model(self, filepath):
+        """保存GAT模型"""
+        torch.save(self.gat_network.state_dict(), filepath)
+        print(f"GAT模型已保存到: {filepath}")
+
+    def load_gat_model(self, filepath):
+        """加载GAT模型"""
+        self.gat_network.load_state_dict(torch.load(filepath, map_location=self.device))
+        print(f"GAT模型已从 {filepath} 加载")
+
+    def get_gat_features_with_grad(self, return_loss=False):
+        """
+        获取带梯度的GAT特征，用于端到端训练
+
+        Args:
+            return_loss: 是否返回GAT的内部损失
+
+        Returns:
+            gat_features: 带梯度的GAT特征
+            loss: GAT内部损失（如果return_loss=True）
+        """
+        # 基础特征：位置和速度
+        active_positions = self.agent_pos[self.active_agents]
+        active_velocities = self.agent_vel[self.active_agents]
+
+        uav_features = torch.tensor(
+            np.concatenate([active_positions, active_velocities], axis=1),
+            dtype=torch.float32,
+            device=self.device,
+            requires_grad=True  # 启用梯度
+        )
+        target_features = torch.tensor(
+            self.target_pos,
+            dtype=torch.float32,
+            device=self.device,
+            requires_grad=True  # 启用梯度
+        )
+
+        # 获取活跃UAV的邻接矩阵
+        active_uav_adj = self._get_active_adj_matrix()
+        active_target_adj = self._get_active_target_adj_matrix()
+
+        # GAT前向传播（保持梯度）
+        gat_features = self.gat_network(
+            uav_features,
+            target_features,
+            active_uav_adj,
+            active_target_adj
+        )
+
+        if return_loss:
+            # 计算GAT的内部损失（可选）
+            # 这里可以添加GAT特定的损失，比如注意力正则化
+            attention_loss = 0.0  # 占位符
+            return gat_features, attention_loss
+
+        return gat_features
+
+    def update_gat_with_loss(self, loss, optimizer):
+        """
+        使用给定的损失更新GAT参数
+
+        Args:
+            loss: 包含GAT梯度的损失
+            optimizer: GAT的优化器
+        """
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    def get_gat_info(self):
+        """获取GAT网络信息"""
+        total_params = sum(p.numel() for p in self.gat_network.parameters())
+        trainable_params = sum(p.numel() for p in self.gat_network.parameters() if p.requires_grad)
+
+        return {
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'device': str(self.device),
+            'training_mode': self.gat_network.training,
+            'model_structure': str(self.gat_network)
+        }
 #
