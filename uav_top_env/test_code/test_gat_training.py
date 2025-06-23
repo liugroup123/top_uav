@@ -10,8 +10,10 @@ import numpy as np
 import sys
 import os
 
-# 添加当前目录到Python路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 添加父目录到Python路径以导入uav_env_top
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)  # 上一级目录 (uav_top_env)
+sys.path.append(parent_dir)
 
 from uav_env_top import UAVEnv
 

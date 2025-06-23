@@ -1,9 +1,11 @@
 import time
 import numpy as np
 import os,sys
-# 添加项目根目录到 Python 路径
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-sys.path.append(project_root)
+
+# 添加父目录到Python路径以导入uav_env_top
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)  # 上一级目录 (uav_top_env)
+sys.path.append(parent_dir)
 
 # 修改这里：从 uav_env_top.py 导入环境
 from uav_env_top import UAVEnv  # 改用支持拓扑变化的环境
