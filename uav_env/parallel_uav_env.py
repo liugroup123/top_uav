@@ -1,7 +1,7 @@
 import numpy as np
 import multiprocessing as mp
 from typing import List, Dict, Any, Tuple
-from mpe_uav.uav_env.uav_env import UAVEnv
+from uav_env.uav_env import UAVEnv
 
 # 确保使用 spawn 方式
 if mp.get_start_method(allow_none=True) != 'spawn':

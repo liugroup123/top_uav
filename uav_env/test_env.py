@@ -5,7 +5,7 @@ import os,sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(project_root)
 
-from mpe_uav.uav_env.uav_env import UAVEnv
+from uav_env.uav_env import UAVEnv
 import pdb
 def test_env(render_mode):
     print(f"\nTesting UAVEnv with render_mode='{render_mode}'")
