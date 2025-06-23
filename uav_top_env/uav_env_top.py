@@ -6,65 +6,86 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from gat_model import UAVAttentionNetwork, create_adjacency_matrices
+from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
+from .config import ExperimentConfig, create_config, config_manager
 import pdb
 
 class UAVEnv(gym.Env):
     def __init__(
         self,
-        num_agents=5,
-        num_targets=10,
-        world_size=1.0,
-        coverage_radius=0.3,
-        communication_radius=0.6,
-        max_steps=200,
+        config=None,  # 配置对象或配置名称
+        config_file=None,  # 配置文件路径
+        # 以下参数用于向后兼容，如果提供config则忽略
+        num_agents=None,
+        num_targets=None,
+        world_size=None,
+        coverage_radius=None,
+        communication_radius=None,
+        max_steps=None,
         render_mode=None,
-        screen_size=(700, 700),
-        render_fps=60,
-        dt=0.1,
-        experiment_type='normal',  # 实验类型参数
-        # 新增拓扑变化控制参数
-        topology_change_interval=None,  # 拓扑变化间隔（步数）
-        topology_change_probability=None,  # 随机模式变化概率
-        min_active_agents=None,  # 最少保持的UAV数量
-        max_active_agents=None,  # 最多UAV数量
-        initial_active_ratio=None  # UAV添加模式的初始活跃比例
+        screen_size=None,
+        render_fps=None,
+        dt=None,
+        experiment_type=None,
+        topology_change_interval=None,
+        topology_change_probability=None,
+        min_active_agents=None,
+        max_active_agents=None,
+        initial_active_ratio=None
     ):
         super().__init__()
-        self.num_agents = num_agents
-        self.num_targets = num_targets
-        self.world_size = world_size
-        self.coverage_radius = coverage_radius
-        self.communication_radius = communication_radius
-        self.max_steps = max_steps
+
+        # 处理配置
+        self.config = self._load_config(
+            config, config_file,
+            num_agents, num_targets, world_size, coverage_radius,
+            communication_radius, max_steps, render_mode, screen_size,
+            render_fps, dt, experiment_type, topology_change_interval,
+            topology_change_probability, min_active_agents, max_active_agents,
+            initial_active_ratio
+        )
+
+        # 从配置中设置环境参数
+        env_config = self.config.environment
+        self.num_agents = env_config.num_agents
+        self.num_targets = env_config.num_targets
+        self.world_size = env_config.world_size
+        self.coverage_radius = env_config.coverage_radius
+        self.communication_radius = env_config.communication_radius
+        self.max_steps = env_config.max_steps
+        self.dt = env_config.dt
         self.curr_step = 0
-        self.dt = dt
         self.max_coverage_rate = 0.0
-        self.max_accel=1.5
-        self.max_speed=2.0
+
+        # 从物理配置设置参数
+        physics_config = self.config.physics
+        self.max_accel = physics_config.max_accel
+        self.max_speed = physics_config.max_speed
 
         # 实验类型配置
-        self.experiment_type = experiment_type  # 'normal', 'uav_loss', 'uav_addition', 'random_mixed'
+        topology_config = self.config.topology
+        self.experiment_type = topology_config.experiment_type
         self._validate_experiment_type()
 
-        # 保存用户自定义参数
+        # 保存拓扑参数
         self.custom_topology_params = {
-            'change_interval': topology_change_interval,
-            'change_probability': topology_change_probability,
-            'min_agents': min_active_agents,
-            'max_agents': max_active_agents,
-            'initial_active_ratio': initial_active_ratio
+            'change_interval': topology_config.topology_change_interval,
+            'change_probability': topology_config.topology_change_probability,
+            'min_agents': topology_config.min_active_agents,
+            'max_agents': topology_config.max_active_agents,
+            'initial_active_ratio': topology_config.initial_active_ratio
         }
 
         # 拓扑变化配置
         self.topology_config = self._init_topology_config()
 
         # 渲染配置
-        self.render_mode = render_mode
-        self.width, self.height = screen_size
+        env_config = self.config.environment
+        self.render_mode = env_config.render_mode
+        self.width, self.height = env_config.screen_size
         self.screen = None
         self.clock = None
-        self.metadata = {"render_fps": render_fps}
+        self.metadata = {"render_fps": env_config.render_fps}
 
         # 设置设备
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1042,4 +1063,72 @@ class UAVEnv(gym.Env):
         self._validate_experiment_type()
         self.topology_config = self._init_topology_config()
         print(f"实验类型已从 '{old_type}' 更改为 '{experiment_type}'")
+
+    def _load_config(self, config, config_file, *args):
+        """加载配置"""
+        from .config import ExperimentConfig, create_config, config_manager
+
+        # 如果提供了配置对象
+        if isinstance(config, ExperimentConfig):
+            return config
+
+        # 如果提供了配置文件路径
+        if config_file is not None:
+            return config_manager.load_config(config_file)
+
+        # 如果提供了配置名称
+        if isinstance(config, str):
+            return create_config(config)
+
+        # 如果没有提供配置，使用传入的参数创建配置
+        if config is None:
+            (num_agents, num_targets, world_size, coverage_radius,
+             communication_radius, max_steps, render_mode, screen_size,
+             render_fps, dt, experiment_type, topology_change_interval,
+             topology_change_probability, min_active_agents, max_active_agents,
+             initial_active_ratio) = args
+
+            from .config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
+
+            # 创建默认配置并应用传入的参数
+            env_config = EnvironmentConfig()
+            if num_agents is not None: env_config.num_agents = num_agents
+            if num_targets is not None: env_config.num_targets = num_targets
+            if world_size is not None: env_config.world_size = world_size
+            if coverage_radius is not None: env_config.coverage_radius = coverage_radius
+            if communication_radius is not None: env_config.communication_radius = communication_radius
+            if max_steps is not None: env_config.max_steps = max_steps
+            if render_mode is not None: env_config.render_mode = render_mode
+            if screen_size is not None: env_config.screen_size = screen_size
+            if render_fps is not None: env_config.render_fps = render_fps
+            if dt is not None: env_config.dt = dt
+
+            topology_config = TopologyConfig()
+            if experiment_type is not None: topology_config.experiment_type = experiment_type
+            if topology_change_interval is not None: topology_config.topology_change_interval = topology_change_interval
+            if topology_change_probability is not None: topology_config.topology_change_probability = topology_change_probability
+            if min_active_agents is not None: topology_config.min_active_agents = min_active_agents
+            if max_active_agents is not None: topology_config.max_active_agents = max_active_agents
+            if initial_active_ratio is not None: topology_config.initial_active_ratio = initial_active_ratio
+
+            return ExperimentConfig(
+                name="runtime_config",
+                description="运行时创建的配置",
+                environment=env_config,
+                topology=topology_config,
+                reward=RewardConfig(),
+                physics=PhysicsConfig(),
+                gat=GATConfig()
+            )
+
+        raise ValueError("必须提供config、config_file或具体参数")
+
+    def save_current_config(self, filename: str):
+        """保存当前配置到文件"""
+        config_manager.save_config(self.config, filename)
+
+    def load_config_from_file(self, filename: str):
+        """从文件重新加载配置并重新初始化环境"""
+        new_config = config_manager.load_config(filename)
+        self.__init__(config=new_config)
 #
