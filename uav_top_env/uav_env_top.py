@@ -6,8 +6,8 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
-from config import ExperimentConfig, create_config, config_manager
+from .gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
+from .config import ExperimentConfig, create_config, config_manager
 import pdb
 
 class UAVEnv(gym.Env):
@@ -126,7 +126,8 @@ class UAVEnv(gym.Env):
             4 +                     # 基础状态 (位置+速度)
             2 * self.num_targets + # 目标相对位置
             2 * (self.num_agents - 1) + # 邻居信息
-            32                     # GAT特征
+            32 +                    # GAT特征
+            3                       # 拓扑信息
         )
         self.observation_space = [spaces.Box(
             low=-np.inf, high=np.inf, 
@@ -1066,7 +1067,7 @@ class UAVEnv(gym.Env):
 
     def _load_config(self, config, config_file, *args):
         """加载配置"""
-        from config import ExperimentConfig, create_config, config_manager
+        from .config import ExperimentConfig, create_config, config_manager
 
         # 如果提供了配置对象
         if isinstance(config, ExperimentConfig):
@@ -1088,7 +1089,7 @@ class UAVEnv(gym.Env):
              topology_change_probability, min_active_agents, max_active_agents,
              initial_active_ratio) = args
 
-            from config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
+            from .config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
 
             # 创建默认配置并应用传入的参数
             env_config = EnvironmentConfig()

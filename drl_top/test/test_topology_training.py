@@ -33,8 +33,8 @@ def test_environment_compatibility():
             env = UAVEnv(
                 render_mode=None,
                 experiment_type=exp_type,
-                num_agents=5,
-                num_targets=8
+                num_agents=6,
+                num_targets=10
             )
             
             # 重置环境

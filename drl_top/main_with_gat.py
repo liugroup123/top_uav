@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+"""
+MATD3训练脚本 - 包含GAT端到端训练
+基于main_no_gat.py，添加GAT联合训练功能
+"""
 import sys
 import os
 
@@ -23,9 +27,9 @@ from config import CONFIG
 
 # 获取当前文件目录路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
-model_dir = os.path.join(current_dir, './output_no_gat/models/test1')  # 模型保存文件夹
-video_dir = os.path.join(current_dir, './output_no_gat/videos/test1')  # 视频保存文件夹
-runs_dir = os.path.join(current_dir, './output_no_gat/runs/test1')  # TensorBoard 日志文件夹
+model_dir = os.path.join(current_dir, './output_with_gat/models/test1')  # 模型保存文件夹
+video_dir = os.path.join(current_dir, './output_with_gat/videos/test1')  # 视频保存文件夹
+runs_dir = os.path.join(current_dir, './output_with_gat/runs/test1')  # TensorBoard 日志文件夹
 
 FRAME_SAVE_INTERVAL = 10  # 减少视频保存频率，提高训练速度
 final_times = 20  # 减少最后保存的视频数量
@@ -40,13 +44,13 @@ def main():
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    
+
     writer = SummaryWriter(log_dir=runs_dir)  # TensorBoard 日志文件夹
     render_mode = CONFIG["render_mode"]
     num_episodes = CONFIG["num_episodes"]
     max_steps_per_episode = CONFIG["max_steps_per_episode"]
     initial_random_steps = CONFIG["initial_random_steps"]  # 初始随机步骤
-    
+
     # 设置随机种子
     seed = random.randint(0, 1000)  # 随机种子
     np.random.seed(seed)
@@ -56,13 +60,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
 
-    # 初始化环境
+    # 初始化环境 - 重要：启用GAT训练模式
     env = UAVEnv(
         render_mode=render_mode,
-        experiment_type='uav_loss',  # 可以改为 'uav_loss', 'uav_addition', 'random_mixed'
+        experiment_type='uav_loss',  # 可以改为 'uav_loss', 'uav_addition', 'normal'
         num_agents=6,
         num_targets=10
     )
+
+    # 关键：设置环境为训练模式，这样GAT梯度不会被detach
+    env.training = True
+    print("🔥 GAT训练模式已启用")
 
     obs, _ = env.reset(seed=seed)
     # 获取智能体列表
@@ -77,7 +85,7 @@ def main():
     action_dims = {agent: action_dim for agent in agents}
 
     # 初始化 MATD3
-    model_path = os.path.join(model_dir, "matd3_model_episode_4000.pth")
+    model_path = os.path.join(model_dir, "matd3_gat_model_episode_4000.pth")
     matd3 = MATD3(
         agents=agents,
         obs_dims=obs_dims,
@@ -92,20 +100,48 @@ def main():
         policy_delay=CONFIG.get("policy_delay", 2)
     )
 
+    # 关键：获取GAT参数并添加到优化器
+    gat_params = list(env.get_gat_parameters())
+    print(f"GAT参数数量: {sum(p.numel() for p in gat_params)}")
+
+    # 为每个智能体的优化器添加GAT参数
+    print("正在重新配置优化器以包含GAT参数...")
+    for agent in agents:
+        # 获取现有的策略网络参数
+        actor_params = list(matd3.actors[agent].parameters())
+        critic_params = list(matd3.critics_1[agent].parameters()) + list(matd3.critics_2[agent].parameters())
+
+        # 重新创建优化器，包含GAT参数
+        matd3.actor_optimizers[agent] = torch.optim.Adam(
+            actor_params + gat_params,
+            lr=CONFIG["actor_lr"]
+        )
+        matd3.critic_optimizers[agent] = torch.optim.Adam(
+            critic_params + gat_params,
+            lr=CONFIG["critic_lr"]
+        )
+    print("✅ 优化器配置完成，GAT将与策略网络联合训练")
+
     # 初始化或加载模型
     if os.path.exists(model_path):
         print("加载已保存的模型...")
         try:
             matd3.load(model_path)
-            print("模型加载完成。")
+            # 尝试加载GAT参数
+            gat_path = model_path.replace('.pth', '_gat.pth')
+            if os.path.exists(gat_path):
+                env.load_gat_model(gat_path)
+                print("模型和GAT加载完成。")
+            else:
+                print("模型加载完成，GAT使用初始参数。")
         except Exception as e:
             print(f"加载模型时出错: {e}")
             print("初始化新模型。")
-            
+
     # 初始化 ReplayBuffer
     replay_buffer = ReplayBuffer(
-        buffer_size=CONFIG["buffer_size"], 
-        batch_size=CONFIG["batch_size"], 
+        buffer_size=CONFIG["buffer_size"],
+        batch_size=CONFIG["batch_size"],
         device=device
     )
 
@@ -125,7 +161,7 @@ def main():
         # 完全随机动作
         actions = {agent: np.random.uniform(-1, 1, env.get_action_space(agent).shape) for agent in agents if agent in obs}
         next_obs, rewards, dones, truncated, infos = env.step(actions)
-        
+
         # 将经验添加到 Replay Buffer
         all_agents = set(agents) | set(obs.keys()) | set(next_obs.keys())
         obs_filled = {agent: obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
@@ -133,15 +169,18 @@ def main():
         rewards_filled = {agent: rewards.get(agent, 0.0) for agent in all_agents}
         next_obs_filled = {agent: next_obs.get(agent, np.zeros(obs_dim)) for agent in all_agents}
         dones_filled = {agent: dones.get(agent, True) for agent in all_agents}
-        
+
         replay_buffer.add(obs_filled, actions_filled, rewards_filled, next_obs_filled, dones_filled)
-        
+
         obs = next_obs
         if all([dones.get(agent, True) for agent in agents]):
             obs, _ = env.reset()
-    
-    print("开始正式训练...")
-    for episode in tqdm(range(num_episodes), desc="训练进度"):
+
+    print("🔥 开始GAT+MATD3联合训练...")
+    print(f"GAT参数将与策略网络一起更新")
+
+    # 训练循环 - 完全基于main_no_gat.py的结构
+    for episode in tqdm(range(num_episodes), desc="GAT训练进度"):
         # 随机种子
         episode_seed = random.randint(0, 1000)  # 每一轮都设置一个新的随机种子
         # 每隔 FRAME_SAVE_INTERVAL 轮保存一次视频，还有最后 final_times 轮保存视频
@@ -150,16 +189,16 @@ def main():
         episode_reward = 0
         frames = []
         max_coverage_rate = 0  # 每一轮重置最大覆盖率
-        
+
         # 动态调整噪声
         current_noise = noise_std * (noise_decay_rate ** episode)
 
         step_count = 0
         episode_start_time = time.time()
-        
+
         for step in range(max_steps_per_episode):
             step_count += 1
-            
+
             # 使用 MATD3 的 select_action 方法选择动作
             actions = matd3.select_action(obs, noise=current_noise)
 
@@ -182,11 +221,11 @@ def main():
 
             # 当经验回放缓冲区有足够的样本时开始训练
             if len(replay_buffer) > CONFIG["batch_size"]:
-                # 更新 MATD3 网络
+                # 更新 MATD3 网络（现在包含GAT参数）
                 loss_info = matd3.train(replay_buffer)
                 actor_loss = loss_info['actor_loss']
                 critic_loss = loss_info['critic_loss']
-                
+
                 actor_losses.append(actor_loss)
                 critic_losses.append(critic_loss)
 
@@ -215,7 +254,7 @@ def main():
         total_rewards.append(episode_reward)
         episode_time = time.time() - episode_start_time
         total_time = time.time() - training_start_time
-        
+
         # 只在特定间隔打印详细信息，减少输出
         if episode % 10 == 0 or episode < 10:
             print(f"\n回合 {episode + 1}/{num_episodes} 完成 (用时: {episode_time:.2f}秒, 总时间: {total_time/60:.2f}分钟):")
@@ -225,6 +264,7 @@ def main():
             print(f"步骤数: {step_count}, 噪声水平: {current_noise:.4f}")
             if actor_losses and critic_losses:
                 print(f"Actor损失: {actor_losses[-1]:.4f}, Critic损失: {critic_losses[-1]:.4f}")
+                print(f"🔥 GAT参数正在联合训练中...")
 
         # TensorBoard 可视化
         writer.add_scalar('Total Reward', episode_reward, episode)
@@ -236,10 +276,12 @@ def main():
 
         # 每隔500轮保存一次模型，减少IO操作
         if (episode + 1) % 500 == 0:
-            intermediate_model_path = os.path.join(model_dir, f"matd3_model_episode_{episode + 1}.pth")
+            intermediate_model_path = os.path.join(model_dir, f"matd3_gat_model_episode_{episode + 1}.pth")
+            intermediate_gat_path = os.path.join(model_dir, f"matd3_gat_model_episode_{episode + 1}_gat.pth")
             try:
                 matd3.save(intermediate_model_path)
-                print(f"模型已保存到 {intermediate_model_path}")
+                env.save_gat_model(intermediate_gat_path)
+                print(f"模型和GAT已保存到 {intermediate_model_path}")
             except Exception as e:
                 print(f"保存模型时出错: {e}")
 
@@ -255,13 +297,17 @@ def main():
                 print(f"保存视频时出错: {e}")
 
     # 保存最终模型
-    model_save_path = os.path.join(model_dir, f"matd3_model_episode_{num_episodes}.pth")
+    model_save_path = os.path.join(model_dir, f"matd3_gat_model_episode_{num_episodes}.pth")
+    gat_save_path = os.path.join(model_dir, f"matd3_gat_model_episode_{num_episodes}_gat.pth")
     matd3.save(model_save_path)
+    env.save_gat_model(gat_save_path)
     print(f"最终模型已保存到 {model_save_path}")
-    
+    print(f"最终GAT已保存到 {gat_save_path}")
+
     # 打印总训练时间
     total_training_time = time.time() - training_start_time
     print(f"总训练时间: {total_training_time/60:.2f}分钟 ({total_training_time/3600:.2f}小时)")
+    print("🎉 GAT+MATD3联合训练完成！")
 
     writer.close()
     env.close()

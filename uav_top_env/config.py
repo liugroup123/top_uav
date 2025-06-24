@@ -27,7 +27,7 @@ class EnvironmentConfig:
 @dataclass
 class TopologyConfig:
     """拓扑变化配置"""
-    experiment_type: str = 'normal'  # 'normal', 'uav_loss', 'uav_addition', 'random_mixed'
+    experiment_type: str = 'normal'  # 'normal', 'uav_loss', 'uav_addition'
     
     # 变化控制参数
     topology_change_interval: Optional[int] = None  # 固定间隔模式的步数
@@ -175,7 +175,7 @@ def get_uav_loss_config() -> ExperimentConfig:
         topology=TopologyConfig(
             experiment_type='uav_loss',
             topology_change_interval=80,
-            min_active_agents=3
+            min_active_agents=4
         )
     )
 
@@ -191,50 +191,7 @@ def get_uav_addition_config() -> ExperimentConfig:
         )
     )
 
-def get_random_mixed_config() -> ExperimentConfig:
-    """随机混合模式配置"""
-    return ExperimentConfig(
-        name="random_mixed_experiment",
-        description="随机混合模式 - 随机损失或添加",
-        topology=TopologyConfig(
-            experiment_type='random_mixed',
-            topology_change_probability=0.015,
-            min_active_agents=2,
-            max_active_agents=8
-        )
-    )
 
-def get_high_frequency_config() -> ExperimentConfig:
-    """高频变化配置"""
-    return ExperimentConfig(
-        name="high_frequency_experiment",
-        description="高频变化实验 - 更频繁的拓扑变化",
-        environment=EnvironmentConfig(num_agents=8, num_targets=12),
-        topology=TopologyConfig(
-            experiment_type='random_mixed',
-            topology_change_probability=0.03,
-            min_active_agents=2,
-            max_active_agents=10
-        )
-    )
-
-def get_large_scale_config() -> ExperimentConfig:
-    """大规模实验配置"""
-    return ExperimentConfig(
-        name="large_scale_experiment",
-        description="大规模UAV实验",
-        environment=EnvironmentConfig(
-            num_agents=12,
-            num_targets=20,
-            world_size=1.5,
-            max_steps=500
-        ),
-        topology=TopologyConfig(
-            experiment_type='random_mixed',
-            min_active_agents=5,
-            max_active_agents=15
-        )
-    )
 
 # 配置工厂函数
 def create_config(config_name: str) -> ExperimentConfig:
@@ -242,10 +199,7 @@ def create_config(config_name: str) -> ExperimentConfig:
     config_map = {
         'normal': get_normal_config,
         'uav_loss': get_uav_loss_config,
-        'uav_addition': get_uav_addition_config,
-        'random_mixed': get_random_mixed_config,
-        'high_frequency': get_high_frequency_config,
-        'large_scale': get_large_scale_config
+        'uav_addition': get_uav_addition_config
     }
     
     if config_name in config_map:
