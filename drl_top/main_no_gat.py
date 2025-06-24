@@ -16,7 +16,7 @@ import imageio
 import time
 
 # 导入本地模块
-from mpe_uav.uav_env.uav_env import UAVEnv
+from uav_top_env.uav_env_top import UAVEnv
 from matd3_no_gat import MATD3, ReplayBuffer
 from utils import OUNoise
 from config import CONFIG
@@ -62,7 +62,12 @@ def main():
     print(f"使用设备: {device}")
 
     # 初始化环境
-    env = UAVEnv(render_mode=render_mode)
+    env = UAVEnv(
+        render_mode=render_mode,
+        experiment_type='normal',  # 可以改为 'uav_loss', 'uav_addition', 'random_mixed'
+        num_agents=5,
+        num_targets=10
+    )
 
     obs, _ = env.reset(seed=seed)
     # 获取智能体列表
