@@ -63,9 +63,11 @@ def main():
     # 初始化环境 - 重要：启用GAT训练模式
     env = UAVEnv(
         render_mode=render_mode,
-        experiment_type='uav_loss',  # 可以改为 'uav_loss', 'uav_addition', 'normal'
-        num_agents=6,
-        num_targets=10
+        experiment_type='probabilistic',  # 'normal' 或 'probabilistic'
+        num_agents=8,
+        num_targets=12,
+        min_active_agents=3,
+        max_active_agents=8
     )
 
     # 关键：设置环境为训练模式，这样GAT梯度不会被detach

@@ -59,9 +59,11 @@ def main():
     # 初始化环境
     env = UAVEnv(
         render_mode=render_mode,
-        experiment_type='uav_loss',  # 可以改为 'uav_loss', 'uav_addition', 'random_mixed'
-        num_agents=6,
-        num_targets=10
+        experiment_type='probabilistic',  # 'normal' 或 'probabilistic'
+        num_agents=8,
+        num_targets=12,
+        min_active_agents=3,
+        max_active_agents=8
     )
 
     obs, _ = env.reset(seed=seed)

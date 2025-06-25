@@ -27,7 +27,7 @@ class EnvironmentConfig:
 @dataclass
 class TopologyConfig:
     """拓扑变化配置"""
-    experiment_type: str = 'normal'  # 'normal', 'uav_loss', 'uav_addition'
+    experiment_type: str = 'normal'  # 'normal', 'probabilistic'
     
     # 变化控制参数
     topology_change_interval: Optional[int] = None  # 固定间隔模式的步数
@@ -167,27 +167,15 @@ def get_normal_config() -> ExperimentConfig:
         topology=TopologyConfig(experiment_type='normal')
     )
 
-def get_uav_loss_config() -> ExperimentConfig:
-    """UAV损失模式配置"""
+def get_probabilistic_config() -> ExperimentConfig:
+    """概率驱动拓扑变化配置"""
     return ExperimentConfig(
-        name="uav_loss_experiment",
-        description="UAV损失模式 - 定期UAV失效",
+        name="probabilistic_experiment",
+        description="概率驱动拓扑变化 - 80%正常/15%损失/5%添加",
         topology=TopologyConfig(
-            experiment_type='uav_loss',
-            topology_change_interval=80,
-            min_active_agents=4
-        )
-    )
-
-def get_uav_addition_config() -> ExperimentConfig:
-    """UAV添加模式配置"""
-    return ExperimentConfig(
-        name="uav_addition_experiment",
-        description="UAV添加模式 - 定期添加UAV",
-        topology=TopologyConfig(
-            experiment_type='uav_addition',
-            topology_change_interval=60,
-            initial_active_ratio=0.6
+            experiment_type='probabilistic',
+            min_active_agents=3,
+            max_active_agents=8
         )
     )
 
@@ -198,8 +186,7 @@ def create_config(config_name: str) -> ExperimentConfig:
     """根据名称创建预定义配置"""
     config_map = {
         'normal': get_normal_config,
-        'uav_loss': get_uav_loss_config,
-        'uav_addition': get_uav_addition_config
+        'probabilistic': get_probabilistic_config
     }
     
     if config_name in config_map:

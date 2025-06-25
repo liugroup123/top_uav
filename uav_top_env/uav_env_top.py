@@ -6,9 +6,8 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from .gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
-from .config import ExperimentConfig, create_config, config_manager
-import pdb
+from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
+from config import ExperimentConfig, create_config, config_manager
 
 class UAVEnv(gym.Env):
     def __init__(
@@ -183,6 +182,13 @@ class UAVEnv(gym.Env):
             'pre_change_coverage': None,     # 变化前的覆盖率
         }
 
+        # Episode级别的拓扑变化计划
+        self.episode_plan = {
+            'type': 'normal',                # 'normal', 'loss', 'addition'
+            'trigger_step': None,            # 触发变化的步数
+            'executed': False                # 是否已执行
+        }
+
         self.training = True  # 默认为训练模式
         
         # GAT网络初始化时设置训练模式
@@ -234,6 +240,9 @@ class UAVEnv(gym.Env):
         # 重置历史记录
         self.coverage_history = []
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
+
+        # 制定本episode的拓扑变化计划
+        self._plan_episode_topology()
 
         obs_list = self._get_obs()
         return {f"agent_{i}": obs_list[i] for i in range(self.num_agents)}, {}
@@ -895,7 +904,7 @@ class UAVEnv(gym.Env):
 
     def _validate_experiment_type(self):
         """验证实验类型参数"""
-        valid_types = ['normal', 'uav_loss', 'uav_addition', 'random_mixed']
+        valid_types = ['normal', 'probabilistic']
         if self.experiment_type not in valid_types:
             raise ValueError(f"实验类型必须是以下之一: {valid_types}, 当前值: {self.experiment_type}")
 
@@ -911,96 +920,92 @@ class UAVEnv(gym.Env):
             } for i in range(self.num_agents)
         }
 
-        if self.experiment_type == 'uav_addition':
-            # UAV添加模式：开始时只激活部分UAV，为后续添加留出空间
-            if self.custom_topology_params['initial_active_ratio'] is not None:
-                # 使用用户指定的比例
-                ratio = max(0.3, min(0.8, self.custom_topology_params['initial_active_ratio']))  # 限制在30%-80%
-                initial_active_count = max(3, int(self.num_agents * ratio))
-            else:
-                # 使用默认逻辑
-                initial_active_count = max(3, self.num_agents - 2)  # 至少3个，最多num_agents-2个
-
-            self.active_agents = list(range(initial_active_count))
-
-            # 将其余UAV设为非活跃状态
-            for i in range(initial_active_count, self.num_agents):
-                self.uav_states[i]['active'] = False
-        else:
-            # 其他模式：初始时所有UAV都是活跃的
-            self.active_agents = list(range(self.num_agents))
+        # 所有模式都从全部UAV活跃开始
+        self.active_agents = list(range(self.num_agents))
 
     def _init_topology_config(self):
-        """初始化拓扑变化配置"""
-        # 默认配置
+        """初始化概率驱动的拓扑变化配置"""
         config = {
-            'enabled': self.experiment_type != 'normal',
-            'change_interval': 50,  # 拓扑变化的间隔步数
-            'change_probability': 0.02,  # 随机模式下每步的变化概率
+            'enabled': self.experiment_type == 'probabilistic',
             'min_agents': 3,  # 最少保持的UAV数量
             'max_agents': self.num_agents,  # 最多UAV数量
-            'last_change_step': 0,  # 上次变化的步数
+
+            # 概率设置 (总和应为100%)
+            'normal_probability': 0.80,    # 80% 正常，无变化
+            'loss_probability': 0.15,      # 15% 损失UAV
+            'addition_probability': 0.05,  # 5% 添加UAV
         }
 
-        # 根据实验类型调整默认配置
-        if self.experiment_type == 'uav_loss':
-            config['change_type'] = 'loss_only'
-            config['change_interval'] = 80  # 损失模式间隔更长
-        elif self.experiment_type == 'uav_addition':
-            config['change_type'] = 'addition_only'
-            config['change_interval'] = 60  # 添加模式间隔适中
-        elif self.experiment_type == 'random_mixed':
-            config['change_type'] = 'random'
-            config['change_probability'] = 0.015  # 随机模式概率稍低
-
-        # 应用用户自定义参数（如果提供）
-        if self.custom_topology_params['change_interval'] is not None:
-            config['change_interval'] = self.custom_topology_params['change_interval']
-
-        if self.custom_topology_params['change_probability'] is not None:
-            config['change_probability'] = self.custom_topology_params['change_probability']
-
+        # 应用用户自定义参数
         if self.custom_topology_params['min_agents'] is not None:
-            config['min_agents'] = max(1, self.custom_topology_params['min_agents'])  # 至少1个
-
+            config['min_agents'] = max(1, self.custom_topology_params['min_agents'])
         if self.custom_topology_params['max_agents'] is not None:
             config['max_agents'] = min(self.num_agents, self.custom_topology_params['max_agents'])
 
         return config
 
+    def _plan_episode_topology(self):
+        """为本episode制定拓扑变化计划"""
+        if not self.topology_config['enabled']:
+            self.episode_plan = {
+                'type': 'normal',
+                'trigger_step': None,
+                'executed': False
+            }
+            return
+
+        # 根据概率决定episode类型
+        rand = np.random.random()
+
+        if rand < self.topology_config['normal_probability']:
+            # 80% 概率：整个episode正常
+            episode_type = 'normal'
+            trigger_step = None
+        elif rand < self.topology_config['normal_probability'] + self.topology_config['loss_probability']:
+            # 15% 概率：episode中损失UAV
+            episode_type = 'loss'
+            # 在episode的30%-70%之间随机选择触发时间
+            trigger_step = int(self.max_steps * (0.3 + 0.4 * np.random.random()))
+        else:
+            # 5% 概率：episode中添加UAV
+            episode_type = 'addition'
+            # 在episode的30%-70%之间随机选择触发时间
+            trigger_step = int(self.max_steps * (0.3 + 0.4 * np.random.random()))
+
+        self.episode_plan = {
+            'type': episode_type,
+            'trigger_step': trigger_step,
+            'executed': False
+        }
+
+        print(f"📋 Episode计划: {episode_type}" +
+              (f" (第{trigger_step}步触发)" if trigger_step else ""))
+
     def trigger_topology_change(self):
-        """根据实验类型触发拓扑变化"""
+        """基于episode计划的拓扑变化触发"""
         if not self.topology_config['enabled']:
             return False
 
-        # 检查是否应该触发变化
-        should_change = False
+        # 检查是否需要执行计划中的拓扑变化
+        if (self.episode_plan['type'] != 'normal' and
+            not self.episode_plan['executed'] and
+            self.curr_step >= self.episode_plan['trigger_step']):
 
-        if self.experiment_type == 'random_mixed':
-            # 随机模式：基于概率触发
-            should_change = np.random.random() < self.topology_config['change_probability']
-        else:
-            # 固定间隔模式
-            steps_since_last = self.curr_step - self.topology_config['last_change_step']
-            should_change = steps_since_last >= self.topology_config['change_interval']
+            # 执行计划中的变化
+            if self.episode_plan['type'] == 'loss':
+                success = self._execute_uav_loss()
+            elif self.episode_plan['type'] == 'addition':
+                success = self._execute_uav_addition()
+            else:
+                success = False
 
-        if not should_change:
-            return False
+            if success:
+                self.episode_plan['executed'] = True
+                print(f"🎯 执行计划: {self.episode_plan['type']} (第{self.curr_step}步)")
 
-        # 执行拓扑变化
-        change_executed = False
+            return success
 
-        if self.experiment_type == 'uav_loss':
-            change_executed = self._execute_uav_loss()
-        elif self.experiment_type == 'uav_addition':
-            change_executed = self._execute_uav_addition()
-        elif self.experiment_type == 'random_mixed':
-            change_executed = self._execute_random_change()
-
-        if change_executed:
-            self.topology_config['last_change_step'] = self.curr_step
-
-        return change_executed
+        return False
 
     def _execute_uav_loss(self):
         """执行UAV损失"""
@@ -1030,19 +1035,7 @@ class UAVEnv(gym.Env):
 
         return False
 
-    def _execute_random_change(self):
-        """执行随机变化（损失或添加）"""
-        # 50%概率选择损失或添加
-        if np.random.random() < 0.5:
-            # 尝试UAV损失
-            if len(self.active_agents) > self.topology_config['min_agents']:
-                return self._execute_uav_loss()
-        else:
-            # 尝试UAV添加
-            if len(self.active_agents) < self.topology_config['max_agents']:
-                return self._execute_uav_addition()
 
-        return False
 
     def get_experiment_info(self):
         """获取实验信息"""
@@ -1067,7 +1060,10 @@ class UAVEnv(gym.Env):
 
     def _load_config(self, config, config_file, *args):
         """加载配置"""
-        from .config import ExperimentConfig, create_config, config_manager
+        try:
+            from .config import ExperimentConfig, create_config, config_manager
+        except ImportError:
+            from config import ExperimentConfig, create_config, config_manager
 
         # 如果提供了配置对象
         if isinstance(config, ExperimentConfig):
@@ -1089,7 +1085,10 @@ class UAVEnv(gym.Env):
              topology_change_probability, min_active_agents, max_active_agents,
              initial_active_ratio) = args
 
-            from .config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
+            try:
+                from .config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
+            except ImportError:
+                from config import EnvironmentConfig, TopologyConfig, RewardConfig, PhysicsConfig, GATConfig
 
             # 创建默认配置并应用传入的参数
             env_config = EnvironmentConfig()
