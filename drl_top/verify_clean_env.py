@@ -1,20 +1,20 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 验证简化环境训练代码的快速测试
 """
 
-import os
 import sys
+import os
+
+# 获取当前文件的父目录（mpe_uav目录）
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)  # mpe_uav目录
+sys.path.append(parent_dir)
+
 import numpy as np
 import torch
 
-# 添加路径
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
 # 导入简化环境和MATD3
-# 使用绝对路径导入
 import importlib.util
 uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean.py')
 spec = importlib.util.spec_from_file_location("uav_env_clean", uav_env_path)
@@ -24,6 +24,9 @@ UAVEnv = uav_env_module.UAVEnv
 
 from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
+
+# 获取当前文件目录路径
+output_dir = os.path.join(current_dir, './output_clean_env')  # 输出目录
 
 def verify_environment():
     """验证环境创建和基本功能"""

@@ -1,24 +1,24 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 简化环境的测试脚本
 测试训练好的MATD3模型在简化环境中的性能
 """
 
-import os
 import sys
-import numpy as np
-import torch
+import os
+
+# 获取当前文件的父目录（mpe_uav目录）
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)  # mpe_uav目录
+sys.path.append(parent_dir)
+
 import cv2
+import torch
+import numpy as np
 from tqdm import tqdm
 import time
 
-# 添加路径
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
 # 导入简化环境和MATD3
-# 使用绝对路径导入
 import importlib.util
 uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean.py')
 spec = importlib.util.spec_from_file_location("uav_env_clean", uav_env_path)
@@ -27,6 +27,13 @@ spec.loader.exec_module(uav_env_module)
 UAVEnv = uav_env_module.UAVEnv
 
 from matd3_no_gat import MATD3
+
+# 获取当前文件目录路径
+model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模型文件夹
+video_dir = os.path.join(current_dir, './test_videos')  # 测试视频保存文件夹
+
+# 创建目录
+os.makedirs(video_dir, exist_ok=True)
 
 def test_model(model_path, num_test_episodes=10, render=True, save_video=True):
     """测试训练好的模型"""
@@ -152,8 +159,6 @@ def test_model(model_path, num_test_episodes=10, render=True, save_video=True):
         
         # 保存视频
         if record_video and frames:
-            video_dir = "test_videos"
-            os.makedirs(video_dir, exist_ok=True)
             video_path = f"{video_dir}/test_episode_{episode+1}_{episode_type}.mp4"
             save_video_file(frames, video_path)
             print(f"  📹 视频已保存: {video_path}")
@@ -268,13 +273,14 @@ def test_random_policy():
 def main():
     """主测试函数"""
     print("🧪 开始测试简化环境中的训练模型")
-    
+
     # 模型路径
-    model_path = "models/clean_env/matd3_final.pth"
-    
+    model_path = f"{model_dir}/matd3_final.pth"
+
     if not os.path.exists(model_path):
         print(f"❌ 模型文件不存在: {model_path}")
         print("请先运行 main_clean_env.py 进行训练")
+        print(f"📁 期望模型路径: {model_path}")
         return
     
     # 测试训练好的模型

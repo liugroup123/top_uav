@@ -1,25 +1,25 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 使用简化环境的MATD3训练脚本
 基于main_no_gat.py，适配uav_env_clean.py
 """
 
-import os
 import sys
-import numpy as np
-import torch
-import cv2
-from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
-import time
+import os
 
-# 添加路径
+# 获取当前文件的父目录（mpe_uav目录）
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
+parent_dir = os.path.dirname(current_dir)  # mpe_uav目录
 sys.path.append(parent_dir)
 
+import cv2
+import torch
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+import time
+
 # 导入简化环境和MATD3
-# 使用绝对路径导入
 import importlib.util
 uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean.py')
 spec = importlib.util.spec_from_file_location("uav_env_clean", uav_env_path)
@@ -29,6 +29,16 @@ UAVEnv = uav_env_module.UAVEnv
 
 from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
+
+# 获取当前文件目录路径
+model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模型保存文件夹
+video_dir = os.path.join(current_dir, './output_clean_env/videos/test1')  # 视频保存文件夹
+runs_dir = os.path.join(current_dir, './output_clean_env/runs/test1')  # TensorBoard 日志文件夹
+
+# 创建目录
+os.makedirs(model_dir, exist_ok=True)
+os.makedirs(video_dir, exist_ok=True)
+os.makedirs(runs_dir, exist_ok=True)
 
 def setup_cuda():
     """设置CUDA优化"""
@@ -65,10 +75,10 @@ def main():
     env = UAVEnv(
         render_mode=render_mode,
         experiment_type='probabilistic',  # 使用概率驱动拓扑变化
-        num_agents=6,
+        num_agents=5,
         num_targets=10,
         max_steps=max_steps,
-        min_active_agents=3,
+        min_active_agents=4,
         max_active_agents=6
     )
     
@@ -111,14 +121,11 @@ def main():
     )
     
     # 创建TensorBoard记录器
-    log_dir = f"runs/clean_env_matd3_{int(time.time())}"
-    writer = SummaryWriter(log_dir)
-    
-    print(f"📊 TensorBoard日志: {log_dir}")
-    
-    # 创建保存目录
-    save_dir = "models/clean_env"
-    os.makedirs(save_dir, exist_ok=True)
+    writer = SummaryWriter(runs_dir)
+
+    print(f"📊 TensorBoard日志: {runs_dir}")
+    print(f"💾 模型保存目录: {model_dir}")
+    print(f"📹 视频保存目录: {video_dir}")
     
     # 初始随机采样
     print(f"🎲 开始初始随机采样 ({initial_random_steps} 步)...")
@@ -223,12 +230,12 @@ def main():
 
         # 保存视频
         if record_video and frames:
-            video_path = f"{save_dir}/episode_{episode}.mp4"
+            video_path = f"{video_dir}/episode_{episode}.mp4"
             save_video(frames, video_path)
 
         # 定期保存模型
         if episode % 100 == 0:
-            model_save_path = f"{save_dir}/matd3_episode_{episode}.pth"
+            model_save_path = f"{model_dir}/matd3_episode_{episode}.pth"
             matd3.save(model_save_path)
             print(f"💾 模型已保存: {model_save_path}")
 
@@ -239,7 +246,7 @@ def main():
             print(f"Episode {episode}: 平均奖励={avg_reward:.2f}, 平均覆盖率={avg_coverage:.3f}, 噪声={current_noise:.3f}")
 
     # 保存最终模型
-    final_model_path = f"{save_dir}/matd3_final.pth"
+    final_model_path = f"{model_dir}/matd3_final.pth"
     matd3.save(final_model_path)
     print(f"🎉 训练完成！最终模型保存至: {final_model_path}")
 
