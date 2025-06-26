@@ -93,6 +93,17 @@ class UAVEnv(gym.Env):
             'last_update_step': -1,
             'update_interval': 3  # 每3步更新一次GAT特征
         }
+
+        # 速度限制参数 - 基于连接性的动态约束
+        self.max_base_speed = 0.1           # 基础最大速度
+        self.connectivity_speed_factor = 0.5 # 连接性影响因子
+        self.min_speed_limit = 0.02         # 最小速度限制
+        self.epsilon = 0.05                 # 连接性容忍度参数
+        self.speed_violation_penalty = -5.0 # 速度违规惩罚
+
+        # 连接性历史记录
+        self.connectivity_history = []
+        self.speed_limits_history = []
         
         # GAT网络 - 使用正确的参数
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,6 +176,10 @@ class UAVEnv(gym.Env):
         self.gat_cache['features'] = None
         self.gat_cache['last_update_step'] = -1
 
+        # 重置速度限制历史
+        self.connectivity_history = []
+        self.speed_limits_history = []
+
         # 制定episode计划
         self._plan_episode()
         
@@ -201,31 +216,66 @@ class UAVEnv(gym.Env):
               (f" (第{trigger_step}步触发)" if trigger_step else ""))
     
     def step(self, actions):
-        """执行一步 - 保持原有接口"""
+        """执行一步 - 添加基于连接性的速度限制"""
         self.curr_step += 1
-        
-        # 执行动作（保持原有逻辑）
+
+        # 计算当前步的动态速度限制
+        speed_limits = self._compute_connectivity_based_speed_limits()
+        self.speed_limits_history.append(speed_limits.copy())
+
+        # 记录速度违规情况
+        speed_violations = {}
+
+        # 执行动作（应用速度限制）
         for i, agent in enumerate(self.agents):
             if i in self.active_agents and agent in actions:
                 action = np.array(actions[agent], dtype=np.float32)
                 action = np.clip(action, -1.0, 1.0)
-                
+
+                # 计算期望速度
+                desired_velocity = action * self.max_speed
+                desired_speed = np.linalg.norm(desired_velocity)
+
+                # 应用动态速度限制
+                speed_limit = speed_limits[i]
+                if desired_speed > speed_limit:
+                    # 速度超限，按比例缩放
+                    if desired_speed > 0:
+                        scale_factor = speed_limit / desired_speed
+                        actual_velocity = desired_velocity * scale_factor
+                    else:
+                        actual_velocity = desired_velocity
+
+                    # 记录违规
+                    speed_violations[agent] = {
+                        'desired_speed': desired_speed,
+                        'limit': speed_limit,
+                        'violation': desired_speed - speed_limit
+                    }
+                else:
+                    actual_velocity = desired_velocity
+                    speed_violations[agent] = {
+                        'desired_speed': desired_speed,
+                        'limit': speed_limit,
+                        'violation': 0.0
+                    }
+
                 # 更新速度和位置
-                self.agent_vel[i] = action * self.max_speed
+                self.agent_vel[i] = actual_velocity
                 self.agent_pos[i] += self.agent_vel[i]
-                
+
                 # 边界处理
-                self.agent_pos[i] = np.clip(self.agent_pos[i], 
+                self.agent_pos[i] = np.clip(self.agent_pos[i],
                                           -self.world_size, self.world_size)
-                
+
                 # 记录动作
                 self.prev_actions[i] = action
         
         # 检查拓扑变化
         self._check_topology_change()
-        
-        # 计算奖励（保持原有复杂度）
-        rewards = self._compute_rewards()
+
+        # 计算奖励（包含速度限制奖励）
+        rewards = self._compute_rewards(speed_violations)
         
         # 检查结束条件
         dones = {agent: self.curr_step >= self.max_steps for agent in self.agents}
@@ -384,8 +434,117 @@ class UAVEnv(gym.Env):
 
         return gat_features
 
-    def _compute_rewards(self):
-        """计算奖励 - 保持原有复杂度"""
+    def _compute_connectivity_based_speed_limits(self):
+        """
+        基于连接性计算每个UAV的动态速度限制
+        实现论文引理1的连接性保持约束
+        """
+        speed_limits = np.full(self.num_agents, self.max_base_speed, dtype=np.float32)
+
+        # 计算当前连接性矩阵
+        connectivity_matrix = self._compute_connectivity_matrix()
+
+        for i in range(self.num_agents):
+            if i not in self.active_agents:
+                speed_limits[i] = 0.0
+                continue
+
+            # 找到关键邻居集合 N_i^c (critical neighbors)
+            critical_neighbors = self._find_critical_neighbors(i, connectivity_matrix)
+
+            if len(critical_neighbors) == 0:
+                # 没有关键邻居，使用基础速度限制
+                speed_limits[i] = self.max_base_speed
+            else:
+                # 计算基于邻居距离的速度约束
+                min_constraint = float('inf')
+
+                for j in critical_neighbors:
+                    if j in self.active_agents:
+                        # 计算到邻居j的距离
+                        dist_ij = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+
+                        # 基于引理1的约束计算
+                        # ε_i = min(r_c - d_ij) ≤ ε
+                        epsilon_i = min(self.communication_range - dist_ij, self.epsilon)
+
+                        if epsilon_i > 0:
+                            # Δd_i ≤ ε_i/2 (当N_i^c ≠ ∅时)
+                            constraint = epsilon_i / 2.0
+                            min_constraint = min(min_constraint, constraint)
+
+                if min_constraint != float('inf'):
+                    speed_limits[i] = max(min_constraint, self.min_speed_limit)
+                else:
+                    speed_limits[i] = self.max_base_speed
+
+        return speed_limits
+
+    def _compute_connectivity_matrix(self):
+        """计算连接性矩阵"""
+        n = self.num_agents
+        connectivity_matrix = np.zeros((n, n), dtype=bool)
+
+        for i in range(n):
+            for j in range(i+1, n):
+                if i in self.active_agents and j in self.active_agents:
+                    dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+                    if dist <= self.communication_range:
+                        connectivity_matrix[i, j] = True
+                        connectivity_matrix[j, i] = True
+
+        return connectivity_matrix
+
+    def _find_critical_neighbors(self, agent_id, connectivity_matrix):
+        """
+        找到agent的关键邻居集合
+        关键邻居是那些对保持全局连通性至关重要的邻居
+        """
+        critical_neighbors = []
+
+        # 获取当前邻居
+        current_neighbors = np.where(connectivity_matrix[agent_id])[0]
+
+        for neighbor in current_neighbors:
+            if neighbor in self.active_agents:
+                # 检查移除这个连接是否会影响全局连通性
+                temp_matrix = connectivity_matrix.copy()
+                temp_matrix[agent_id, neighbor] = False
+                temp_matrix[neighbor, agent_id] = False
+
+                if not self._is_graph_connected(temp_matrix):
+                    critical_neighbors.append(neighbor)
+
+        return critical_neighbors
+
+    def _is_graph_connected(self, adjacency_matrix):
+        """检查图是否连通（使用DFS）"""
+        active_indices = [i for i in range(self.num_agents) if i in self.active_agents]
+
+        if len(active_indices) <= 1:
+            return True
+
+        # 从第一个活跃节点开始DFS
+        visited = set()
+        stack = [active_indices[0]]
+
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+
+            # 添加所有连接的邻居
+            for neighbor in range(self.num_agents):
+                if (neighbor in self.active_agents and
+                    neighbor not in visited and
+                    adjacency_matrix[node, neighbor]):
+                    stack.append(neighbor)
+
+        return len(visited) == len(active_indices)
+
+    def _compute_rewards(self, speed_violations=None):
+        """计算奖励 - 包含速度限制相关奖励"""
         rewards = {}
 
         # 计算覆盖率
@@ -397,11 +556,15 @@ class UAVEnv(gym.Env):
         # 计算稳定性
         stability_reward = self._compute_stability_reward()
 
-        # 基础奖励
+        # 计算速度合规奖励
+        speed_compliance_reward = self._compute_speed_compliance_reward(speed_violations)
+
+        # 基础奖励（加入速度合规）
         base_reward = (
             self.coverage_weight * coverage_rate +
             self.connectivity_weight * connectivity_reward +
-            self.stability_weight * stability_reward
+            self.stability_weight * stability_reward +
+            0.1 * speed_compliance_reward  # 速度合规权重
         )
 
         for i, agent in enumerate(self.agents):
@@ -412,11 +575,35 @@ class UAVEnv(gym.Env):
                 if np.any(np.abs(self.agent_pos[i]) > self.world_size - 0.1):
                     reward -= self.boundary_weight
 
+                # 个体速度违规惩罚
+                if speed_violations and agent in speed_violations:
+                    violation = speed_violations[agent]['violation']
+                    if violation > 0:
+                        reward += self.speed_violation_penalty * violation
+
                 rewards[agent] = reward
             else:
                 rewards[agent] = 0.0
 
         return rewards
+
+    def _compute_speed_compliance_reward(self, speed_violations):
+        """计算速度合规奖励"""
+        if not speed_violations:
+            return 0.0
+
+        total_compliance = 0.0
+        active_count = 0
+
+        for agent in self.agents:
+            if agent in speed_violations:
+                violation = speed_violations[agent]['violation']
+                # 合规度 = 1 - (违规程度 / 最大可能违规)
+                compliance = max(0.0, 1.0 - violation / self.max_base_speed)
+                total_compliance += compliance
+                active_count += 1
+
+        return total_compliance / max(active_count, 1)
 
     def calculate_coverage_complete(self):
         """计算完整覆盖率信息 - 保持原有接口"""

@@ -221,11 +221,26 @@ def main():
                     frames.append(frame)
 
         # 计算并记录覆盖率
-        coverage_rate, is_fully_connected, max_coverage_rate, unconnected_uav = env.calculate_coverage_complete()
-        max_coverage_rate = max(coverage_rate, max_coverage_rate)
+        final_coverage_rate, is_fully_connected, episode_max_coverage, unconnected_uav = env.calculate_coverage_complete()
+        max_coverage_rate = max(final_coverage_rate, max_coverage_rate)
+
+        # 获取episode信息
+        episode_type = env.episode_plan['type']
+        trigger_step = env.episode_plan['trigger_step']
+        executed = env.episode_plan['executed']
+
+        # 打印详细的episode信息
+        print(f"Episode {episode:4d}: 类型={episode_type:8s} | "
+              f"奖励={episode_reward:7.2f} | "
+              f"最终覆盖率={final_coverage_rate:.3f} | "
+              f"最大覆盖率={episode_max_coverage:.3f} | "
+              f"活跃UAV={len(env.active_agents)}/{env.num_agents} | "
+              f"噪声={current_noise:.3f}" +
+              (f" | 触发步数={trigger_step}" if trigger_step else "") +
+              (f" | 已执行" if executed else ""))
 
         # 将覆盖率记录到 TensorBoard
-        writer.add_scalar('Performance/Coverage_Rate', coverage_rate, episode)
+        writer.add_scalar('Performance/Coverage_Rate', final_coverage_rate, episode)
         writer.add_scalar('Performance/Episode_Reward', episode_reward, episode)
         writer.add_scalar('Performance/Max_Coverage_Rate', max_coverage_rate, episode)
         writer.add_scalar('Training/Noise_Std', current_noise, episode)
@@ -233,7 +248,7 @@ def main():
 
         # 记录统计信息
         episode_rewards.append(episode_reward)
-        episode_coverages.append(coverage_rate)
+        episode_coverages.append(final_coverage_rate)
 
         # 保存视频
         if record_video and frames:
@@ -246,11 +261,16 @@ def main():
             matd3.save(model_save_path)
             print(f"💾 模型已保存: {model_save_path}")
 
-        # 打印进度
-        if episode % 50 == 0:
-            avg_reward = np.mean(episode_rewards[-50:])
-            avg_coverage = np.mean(episode_coverages[-50:])
-            print(f"Episode {episode}: 平均奖励={avg_reward:.2f}, 平均覆盖率={avg_coverage:.3f}, 噪声={current_noise:.3f}")
+        # 打印统计摘要（每100个episode）
+        if episode % 100 == 0 and episode > 0:
+            avg_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
+            avg_coverage = np.mean(episode_coverages[-100:]) if len(episode_coverages) >= 100 else np.mean(episode_coverages)
+            print(f"\n📊 Episode {episode} 统计摘要:")
+            print(f"   最近100个episodes平均奖励: {avg_reward:.2f}")
+            print(f"   最近100个episodes平均覆盖率: {avg_coverage:.3f}")
+            print(f"   当前最大覆盖率: {max_coverage_rate:.3f}")
+            print(f"   当前噪声水平: {current_noise:.3f}")
+            print("-" * 80)
 
     # 保存最终模型
     final_model_path = f"{model_dir}/matd3_final.pth"
