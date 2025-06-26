@@ -135,18 +135,90 @@ def test_reward_calculation():
 def test_rendering():
     """测试渲染功能"""
     print("\n🔍 测试渲染功能...\n")
-    
+
     env = UAVEnv(render_mode='rgb_array', experiment_type='normal', num_agents=3, num_targets=5)
     obs, _ = env.reset()
-    
+
     # 测试RGB数组渲染
     rgb_array = env.render(mode='rgb_array')
     if rgb_array is not None:
         print(f"✅ RGB渲染成功: 形状 {rgb_array.shape}")
     else:
         print("⚠️  RGB渲染返回None")
-    
+
     env.close()
+    return True
+
+def test_speed_limits_visual():
+    """可视化测试速度限制功能"""
+    print("\n🔍 可视化测试速度限制功能...\n")
+
+    # 创建可视化环境
+    env = UAVEnv(
+        render_mode='human',  # 人类可视化模式
+        experiment_type='normal',
+        num_agents=4,
+        num_targets=6,
+        max_steps=100
+    )
+
+    print("🎮 开始可视化测试...")
+    print("📋 观察要点:")
+    print("  - UAV移动速度是否受到限制")
+    print("  - 连接性是否得到保持")
+    print("  - 速度限制是否动态调整")
+    print("  - 按 ESC 或关闭窗口退出")
+    print("\n" + "="*50)
+
+    try:
+        obs, _ = env.reset()
+
+        for step in range(100):
+            # 计算速度限制
+            speed_limits = env._compute_connectivity_based_speed_limits()
+
+            # 生成测试动作 - 故意让一些UAV尝试高速移动
+            actions = {}
+            for i, agent in enumerate(env.agents):
+                if i in env.active_agents:
+                    # 第一个UAV尝试快速移动，测试速度限制
+                    if i == 0:
+                        actions[agent] = np.array([0.8, 0.8])  # 高速动作
+                    else:
+                        actions[agent] = np.array([0.3, 0.2])  # 正常动作
+
+            # 执行步骤
+            obs, rewards, dones, _, _ = env.step(actions)
+
+            # 打印速度限制信息
+            if step % 10 == 0:
+                print(f"Step {step:3d}: 速度限制 = {speed_limits[:len(env.active_agents)]}")
+                current_speeds = [np.linalg.norm(env.agent_vel[i]) for i in env.active_agents]
+                print(f"         当前速度 = {current_speeds}")
+                print(f"         活跃UAV = {len(env.active_agents)}")
+
+                # 检查连通性
+                connectivity_matrix = env._compute_connectivity_matrix()
+                is_connected = env._is_graph_connected(connectivity_matrix)
+                print(f"         连通性 = {'✓' if is_connected else '✗'}")
+                print("-" * 40)
+
+            # 渲染
+            env.render()
+
+            # 检查是否完成
+            if all(dones.values()):
+                break
+
+        print("\n✅ 可视化测试完成")
+
+    except KeyboardInterrupt:
+        print("\n⚠️  用户中断测试")
+    except Exception as e:
+        print(f"\n❌ 测试出错: {e}")
+    finally:
+        env.close()
+
     return True
 
 def test_uav_operations():
@@ -206,6 +278,7 @@ def main():
         ("拓扑实验", test_topology_experiments),
         ("奖励计算", test_reward_calculation),
         ("渲染功能", test_rendering),
+        ("速度限制可视化", test_speed_limits_visual),
         ("UAV操作", test_uav_operations)
     ]
     
