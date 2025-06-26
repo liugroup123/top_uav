@@ -70,6 +70,10 @@ def main():
     max_steps = CONFIG["max_steps"]
     initial_random_steps = CONFIG["initial_random_steps"]
     render_mode = None  # 'human' 或 None
+
+    # 速度优化参数
+    train_frequency = CONFIG.get("train_frequency", 3)  # 每3步训练一次
+    log_interval = CONFIG.get("log_interval", 10)       # 每10步记录一次日志
     
     # 创建简化环境
     env = UAVEnv(
@@ -196,12 +200,15 @@ def main():
 
             replay_buffer.add(obs_filled, actions_filled, rewards_filled, next_obs_filled, dones_filled)
 
-            # 训练网络
-            if len(replay_buffer) > CONFIG["batch_size"]:
-                loss_info = matd3.train(replay_buffer)
-                
-                # 记录损失到TensorBoard
-                if step % 10 == 0:
+            # 训练网络（优化训练频率）
+            if len(replay_buffer) > CONFIG["batch_size"] and step % train_frequency == 0:
+                # 批量训练提高效率
+                loss_info = None
+                for _ in range(2):  # 每次触发训练2轮
+                    loss_info = matd3.train(replay_buffer)
+
+                # 记录损失到TensorBoard（减少写入频率）
+                if loss_info and step % log_interval == 0:
                     writer.add_scalar('Loss/Actor', loss_info['actor_loss'], episode * max_steps + step)
                     writer.add_scalar('Loss/Critic', loss_info['critic_loss'], episode * max_steps + step)
 

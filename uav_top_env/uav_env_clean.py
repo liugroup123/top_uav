@@ -86,6 +86,13 @@ class UAVEnv(gym.Env):
             'trigger_step': None,
             'executed': False
         }
+
+        # GAT缓存优化 - 减少CPU-GPU传输
+        self.gat_cache = {
+            'features': None,
+            'last_update_step': -1,
+            'update_interval': 3  # 每3步更新一次GAT特征
+        }
         
         # GAT网络 - 使用正确的参数
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -153,7 +160,11 @@ class UAVEnv(gym.Env):
         # 重置历史记录
         self.coverage_history = []
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
-        
+
+        # 重置GAT缓存
+        self.gat_cache['features'] = None
+        self.gat_cache['last_update_step'] = -1
+
         # 制定episode计划
         self._plan_episode()
         
@@ -275,67 +286,83 @@ class UAVEnv(gym.Env):
         return True
 
     def _get_obs(self):
-        """获取观察 - 保持原有格式和复杂度"""
-        # 计算GAT特征
+        """获取观察 - 优化版本，减少重复计算"""
+        # 计算GAT特征（使用缓存）
         gat_features = self._compute_gat_features()
 
-        obs_list = []
+        # 预计算公共数据，避免重复计算
+        active_agents_ratio = len(self.active_agents) / self.num_agents
+        time_progress = self.curr_step / self.max_steps
+
+        # 批量计算目标相对位置
+        target_relative_all = []
         for i in range(self.num_agents):
-            obs_parts = []
+            target_relative = (self.target_pos - self.agent_pos[i]).flatten()
+            target_relative_all.append(target_relative)
 
-            # 基础状态：位置和速度
-            obs_parts.extend(self.agent_pos[i])
-            obs_parts.extend(self.agent_vel[i])
-
-            # 目标相对位置
-            for target_pos in self.target_pos:
-                relative_pos = target_pos - self.agent_pos[i]
-                obs_parts.extend(relative_pos)
-
-            # 邻居信息
+        # 批量计算邻居相对位置
+        neighbor_relative_all = []
+        for i in range(self.num_agents):
+            neighbor_relative = []
             for j in range(self.num_agents):
                 if j != i:
                     if j in self.active_agents:
                         relative_pos = self.agent_pos[j] - self.agent_pos[i]
-                        obs_parts.extend(relative_pos)
+                        neighbor_relative.extend(relative_pos)
                     else:
-                        obs_parts.extend([0.0, 0.0])
+                        neighbor_relative.extend([0.0, 0.0])
+            neighbor_relative_all.append(neighbor_relative)
 
-            # GAT特征
+        # 批量转换GAT特征
+        gat_features_np = []
+        for i in range(self.num_agents):
             if i < len(gat_features):
                 gat_feat = gat_features[i]
                 if torch.is_tensor(gat_feat):
-                    # 处理需要梯度的tensor
                     if gat_feat.requires_grad:
                         gat_feat = gat_feat.detach().cpu().numpy()
                     else:
                         gat_feat = gat_feat.cpu().numpy()
-                obs_parts.extend(gat_feat)
+                gat_features_np.append(gat_feat)
             else:
-                obs_parts.extend(np.zeros(32))
+                gat_features_np.append(np.zeros(32, dtype=np.float32))
 
-            # 拓扑信息
-            obs_parts.extend([
-                len(self.active_agents) / self.num_agents,  # 活跃比例
-                float(i in self.active_agents),             # 自身状态
-                self.curr_step / self.max_steps             # 时间进度
-            ])
+        # 组装观察
+        obs_list = []
+        for i in range(self.num_agents):
+            obs_parts = np.concatenate([
+                self.agent_pos[i],                    # 位置
+                self.agent_vel[i],                    # 速度
+                target_relative_all[i],               # 目标相对位置
+                neighbor_relative_all[i],             # 邻居信息
+                gat_features_np[i],                   # GAT特征
+                [active_agents_ratio,                 # 活跃比例
+                 float(i in self.active_agents),      # 自身状态
+                 time_progress]                       # 时间进度
+            ]).astype(np.float32)
 
-            obs_list.append(np.array(obs_parts, dtype=np.float32))
+            obs_list.append(obs_parts)
 
         return obs_list
 
     def _compute_gat_features(self):
-        """计算GAT特征 - 保持原有实现"""
-        # 准备输入数据
+        """计算GAT特征 - 优化版本，减少CPU-GPU传输"""
+        # 检查是否需要更新GAT特征（缓存机制）
+        if (self.gat_cache['features'] is not None and
+            self.curr_step - self.gat_cache['last_update_step'] < self.gat_cache['update_interval']):
+            return self.gat_cache['features']
+
+        # 准备输入数据 - 批量转换减少传输次数
         uav_features = np.concatenate([self.agent_pos, self.agent_vel], axis=1)
-        uav_tensor = torch.FloatTensor(uav_features).to(self.device)
-        target_tensor = torch.FloatTensor(self.target_pos).to(self.device)
 
-        # 创建邻接矩阵 - 传入torch tensor
-        uav_pos_tensor = torch.FloatTensor(self.agent_pos).to(self.device)
-        target_pos_tensor = torch.FloatTensor(self.target_pos).to(self.device)
+        # 一次性传输所有数据到GPU
+        with torch.no_grad():
+            uav_tensor = torch.FloatTensor(uav_features).to(self.device, non_blocking=True)
+            target_tensor = torch.FloatTensor(self.target_pos).to(self.device, non_blocking=True)
+            uav_pos_tensor = torch.FloatTensor(self.agent_pos).to(self.device, non_blocking=True)
+            target_pos_tensor = torch.FloatTensor(self.target_pos).to(self.device, non_blocking=True)
 
+        # 创建邻接矩阵
         uav_adj, uav_target_adj = create_adjacency_matrices(
             uav_pos_tensor, target_pos_tensor,
             self.communication_range, self.sensing_range,
@@ -350,6 +377,10 @@ class UAVEnv(gym.Env):
 
         if not self.training:
             gat_features = gat_features.detach()
+
+        # 更新缓存
+        self.gat_cache['features'] = gat_features
+        self.gat_cache['last_update_step'] = self.curr_step
 
         return gat_features
 

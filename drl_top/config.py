@@ -18,4 +18,8 @@ CONFIG = {
     "noise_decay_rate": 0.995,           # 保持兼容性
     "min_noise": 0.01,                   # 添加缺少的键
     "initial_random_steps": 1000,
+
+    # 速度优化参数
+    "train_frequency": 3,                # 每3步训练一次
+    "log_interval": 20,                  # 每20步记录日志
 }
