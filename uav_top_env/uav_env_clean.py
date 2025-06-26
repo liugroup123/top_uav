@@ -10,10 +10,22 @@ import gym
 from gym import spaces
 import cv2
 
-try:
-    from .gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
-except ImportError:
-    from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
+# 动态导入GAT模型
+import importlib.util
+import os
+
+def _import_gat_model():
+    """动态导入GAT模型"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    gat_model_path = os.path.join(current_dir, 'gat_model_top.py')
+
+    spec = importlib.util.spec_from_file_location("gat_model_top", gat_model_path)
+    gat_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gat_module)
+
+    return gat_module.UAVAttentionNetwork, gat_module.create_adjacency_matrices
+
+UAVAttentionNetwork, create_adjacency_matrices = _import_gat_model()
 
 # 简化版本不需要复杂的配置导入
 
