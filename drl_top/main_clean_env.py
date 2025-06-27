@@ -179,9 +179,9 @@ def main():
         # 当前噪声
         current_noise = max(min_noise, noise_std * (noise_decay ** episode))
         
-        # 视频录制（每100个episode录制一次）
+        # 视频录制（每50个episode录制一次，提高录制频率）
         frames = []
-        record_video = (episode % 100 == 0) and render_mode is None
+        record_video = (episode % 50 == 0) and render_mode is None
         
         for step in range(max_steps):
             # 使用 MATD3 的 select_action 方法选择动作
@@ -216,9 +216,23 @@ def main():
 
             # 录制视频帧
             if record_video:
-                frame = env.render(mode='rgb_array')
-                if frame is not None:
-                    frames.append(frame)
+                try:
+                    # 临时设置render_mode为rgb_array
+                    original_mode = env.render_mode
+                    env.render_mode = 'rgb_array'
+                    frame = env.render()
+                    env.render_mode = original_mode
+
+                    if frame is not None and len(frame.shape) == 3:
+                        # 确保帧格式正确
+                        if frame.shape[2] == 3:  # RGB格式
+                            frames.append(frame)
+                        else:
+                            print(f"⚠️  帧格式错误: {frame.shape}")
+                    elif frame is None:
+                        print(f"⚠️  渲染返回None (step {step})")
+                except Exception as e:
+                    print(f"❌ 渲染出错 (step {step}): {e}")
 
         # 计算并记录覆盖率
         final_coverage_rate, is_fully_connected, episode_max_coverage, unconnected_uav = env.calculate_coverage_complete()
@@ -253,10 +267,10 @@ def main():
         # 保存视频
         if record_video and frames:
             video_path = f"{video_dir}/episode_{episode}.mp4"
-            save_video(frames, video_path)
+            save_video(frames, video_path, fps=60)  # 提高帧率到60fps
 
         # 定期保存模型
-        if episode % 100 == 0:
+        if episode % 500 == 0:
             model_save_path = f"{model_dir}/matd3_episode_{episode}.pth"
             matd3.save(model_save_path)
             print(f"💾 模型已保存: {model_save_path}")
@@ -281,20 +295,80 @@ def main():
     env.close()
     writer.close()
 
-def save_video(frames, path, fps=30):
-    """保存视频"""
+def save_video(frames, path, fps=60):
+    """保存视频 - 高质量版本"""
     if not frames:
+        print(f"⚠️  没有帧数据，跳过视频保存: {path}")
         return
-    
-    height, width, _ = frames[0].shape
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(path, fourcc, fps, (width, height))
-    
-    for frame in frames:
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame_bgr)
-    
-    out.release()
+
+    try:
+        # 检查帧格式
+        first_frame = frames[0]
+        if first_frame is None:
+            print(f"❌ 第一帧为None，无法保存视频: {path}")
+            return
+
+        height, width, channels = first_frame.shape
+        print(f"📹 保存视频: {path} ({width}x{height}, {len(frames)}帧, {fps}fps)")
+
+        # 优先使用高质量编码器
+        codecs_to_try = [
+            ('mp4v', '.mp4'),      # 最兼容
+            ('XVID', '.avi'),      # 高质量
+            ('MJPG', '.avi'),      # 无损
+            ('H264', '.mp4'),      # 现代编码器
+            ('X264', '.mp4')       # 备选
+        ]
+
+        success = False
+        for codec, ext in codecs_to_try:
+            try:
+                # 根据编码器调整文件扩展名
+                if not path.endswith(ext):
+                    adjusted_path = path.rsplit('.', 1)[0] + ext
+                else:
+                    adjusted_path = path
+
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                out = cv2.VideoWriter(adjusted_path, fourcc, fps, (width, height))
+
+                if not out.isOpened():
+                    continue
+
+                # 写入所有帧
+                for i, frame in enumerate(frames):
+                    if frame is not None and frame.shape == (height, width, channels):
+                        # 确保帧是uint8格式
+                        if frame.dtype != np.uint8:
+                            frame = (frame * 255).astype(np.uint8) if frame.max() <= 1.0 else frame.astype(np.uint8)
+
+                        # 转换颜色格式 RGB -> BGR
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        out.write(frame_bgr)
+                    else:
+                        print(f"⚠️  跳过无效帧 {i}")
+
+                out.release()
+
+                # 检查文件是否成功创建
+                if os.path.exists(adjusted_path) and os.path.getsize(adjusted_path) > 0:
+                    print(f"✅ 视频保存成功: {adjusted_path} (编码器: {codec})")
+                    success = True
+                    break
+                else:
+                    print(f"❌ 编码器 {codec} 失败")
+
+            except Exception as e:
+                print(f"❌ 编码器 {codec} 出错: {e}")
+                continue
+
+        if not success:
+            print(f"❌ 所有编码器都失败，无法保存视频: {path}")
+
+    except Exception as e:
+        print(f"❌ 视频保存出错: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == '__main__':
     main()
