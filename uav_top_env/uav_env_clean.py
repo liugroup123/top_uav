@@ -49,11 +49,16 @@ class UAVEnv(gym.Env):
         self.max_steps = max_steps
         self.experiment_type = experiment_type
         self.render_mode = render_mode
+        self.curr_step = 0
+        self.max_coverage_rate = 0.0
         
-        # 物理参数
-        self.max_speed = 0.1
-        self.communication_range = 0.3
-        self.sensing_range = 0.2
+        # 物理参数（与原版本保持一致）
+        self.max_speed = 2.0                    
+        self.max_accel = 1.5                    
+        self.communication_range = 0.6          # 原版本: 0.6
+        self.coverage_radius = 0.3              # 原版本: 0.3 (sensing_range改名)
+        self.sensing_range = 0.3                # 与coverage_radius保持一致
+        self.dt = 0.1                           # 原版本: 0.1
         
         # 拓扑参数
         self.min_active_agents = min_active_agents
@@ -95,10 +100,10 @@ class UAVEnv(gym.Env):
         }
 
         # 速度限制参数 - 基于连接性的动态约束
-        self.max_base_speed = 0.1           # 基础最大速度
+        self.max_base_speed = 1.0           # 基础最大速度（与max_speed一致）
         self.connectivity_speed_factor = 0.5 # 连接性影响因子
-        self.min_speed_limit = 0.02         # 最小速度限制
-        self.epsilon = 0.05                 # 连接性容忍度参数
+        self.min_speed_limit = 0.2          # 最小速度限制（调整比例）
+        self.epsilon = 0.1                  # 连接性容忍度参数（调整比例）
         self.speed_violation_penalty = -5.0 # 速度违规惩罚
 
         # 连接性历史记录
@@ -125,7 +130,9 @@ class UAVEnv(gym.Env):
         # 渲染相关
         self.screen = None
         self.clock = None
-        self.screen_size = 700
+        self.width, self.height = (700, 700)  # 保持与原版本一致
+        self.metadata = {"render_fps": 60}  # 与原版本一致
+        self.font = None  # 字体对象
         
         # 历史记录
         self.coverage_history = []
@@ -159,13 +166,22 @@ class UAVEnv(gym.Env):
             np.random.seed(seed)
         
         self.curr_step = 0
+        self.max_coverage_rate = 0.0
         self.active_agents = list(range(self.num_agents))
         
-        # 随机初始化位置
-        self.agent_pos = np.random.uniform(-self.world_size, self.world_size, 
-                                         (self.num_agents, 2)).astype(np.float32)
+        # 初始化UAV位置（与原版本一致：底部排列）
+        self.agent_pos = []
+        bottom_y = -self.world_size + 0.15
+        spacing = 2 * self.world_size / (self.num_agents + 1)
+        for i in range(self.num_agents):
+            x = -self.world_size + (i + 1) * spacing
+            self.agent_pos.append([x, bottom_y])
+        self.agent_pos = np.array(self.agent_pos, dtype=np.float32)
+
         self.agent_vel = np.zeros((self.num_agents, 2), dtype=np.float32)
-        self.target_pos = np.random.uniform(-self.world_size, self.world_size, 
+
+        # 初始化目标位置（与原版本一致：0.85范围内随机分布）
+        self.target_pos = np.random.uniform(-self.world_size*0.85, self.world_size*0.85,
                                           (self.num_targets, 2)).astype(np.float32)
         
         # 重置历史记录
@@ -260,9 +276,9 @@ class UAVEnv(gym.Env):
                         'violation': 0.0
                     }
 
-                # 更新速度和位置
+                # 更新速度和位置（使用正确的物理模型）
                 self.agent_vel[i] = actual_velocity
-                self.agent_pos[i] += self.agent_vel[i]
+                self.agent_pos[i] += self.agent_vel[i] * self.dt  # 位置 = 位置 + 速度 × 时间
 
                 # 边界处理
                 self.agent_pos[i] = np.clip(self.agent_pos[i],
@@ -605,22 +621,58 @@ class UAVEnv(gym.Env):
 
         return total_compliance / max(active_count, 1)
 
+    def close(self):
+        """关闭环境 - 与原版本一致"""
+        if self.screen is not None:
+            pygame.quit()
+            self.screen = None
+
     def calculate_coverage_complete(self):
-        """计算完整覆盖率信息 - 保持原有接口"""
-        covered_targets = 0
-        for target_pos in self.target_pos:
-            for agent_idx in self.active_agents:
-                distance = np.linalg.norm(target_pos - self.agent_pos[agent_idx])
-                if distance <= self.sensing_range:
-                    covered_targets += 1
+        """计算完整覆盖率信息 - 与原版本完全一致"""
+        # 计算目标点是否被覆盖
+        covered_flags = []
+        for target in self.target_pos:
+            covered = False
+            for agent in self.agent_pos:
+                distance = np.linalg.norm(target - agent)
+                if distance <= self.coverage_radius:
+                    covered = True
                     break
+            covered_flags.append(covered)
 
-        coverage_rate = covered_targets / self.num_targets if self.num_targets > 0 else 0.0
-        is_fully_connected = True  # 简化实现
-        max_coverage_rate = coverage_rate
-        unconnected_uav = 0
+        # 计算覆盖率
+        covered_count = sum(covered_flags)
+        total_targets = len(self.target_pos)
+        coverage_rate = covered_count / total_targets if total_targets > 0 else 0
 
-        return coverage_rate, is_fully_connected, max_coverage_rate, unconnected_uav
+        # 构建通信邻接矩阵
+        num_agents = self.num_agents
+        adjacency_matrix = np.zeros((num_agents, num_agents), dtype=bool)
+        for i in range(num_agents):
+            for j in range(i + 1, num_agents):
+                distance = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+                if distance <= self.communication_range:
+                    adjacency_matrix[i, j] = True
+                    adjacency_matrix[j, i] = True
+
+        # DFS 检查连通性
+        visited = [False] * num_agents
+
+        def dfs(idx):
+            visited[idx] = True
+            for neighbor_idx, connected in enumerate(adjacency_matrix[idx]):
+                if connected and not visited[neighbor_idx]:
+                    dfs(neighbor_idx)
+
+        dfs(0)
+        fully_connected = all(visited)
+        unconnected_count = visited.count(False)
+
+        # 更新最大覆盖率
+        if fully_connected:
+            self.max_coverage_rate = max(self.max_coverage_rate, coverage_rate)
+
+        return coverage_rate, fully_connected, self.max_coverage_rate, unconnected_count
 
     def _compute_connectivity_reward(self):
         """计算连通性奖励"""
@@ -651,73 +703,156 @@ class UAVEnv(gym.Env):
         stability = 1.0 - np.std(recent_coverage)
         return max(0.0, stability)
 
-    def render(self, mode='human'):
-        """渲染环境 - 保持原有接口"""
-        if mode == 'rgb_array':
-            return self._render_rgb_array()
-        elif mode == 'human':
-            return self._render_human()
-        else:
-            return None
-
-    def _render_human(self):
-        """人类可视化渲染"""
+    def render(self):
+        """渲染环境 - 与原版本完全一致"""
+        if self.render_mode is None:
+            import gym
+            gym.logger.warn(
+                "Calling render without specifying render_mode."
+            )
+            return
         if self.screen is None:
             pygame.init()
-            pygame.display.init()
-            self.screen = pygame.display.set_mode((self.screen_size, self.screen_size))
+            pygame.font.init()  # 确保字体模块初始化
+            self.screen = pygame.display.set_mode((self.width, self.height))
+            pygame.display.set_caption('UAV Topology')
             self.clock = pygame.time.Clock()
 
-        # 清屏
+            # 初始化字体
+            try:
+                # 尝试使用系统字体
+                self.font = pygame.font.SysFont('arial', 24, bold=True)
+                if self.font is None:
+                    raise Exception("SysFont failed")
+            except:
+                try:
+                    # 备选：使用默认字体
+                    self.font = pygame.font.Font(None, 28)
+                except:
+                    # 最后备选：创建基础字体
+                    self.font = pygame.font.Font(pygame.font.get_default_font(), 24)
+        self.draw()
+        if self.render_mode == 'rgb_array':
+            data = pygame.surfarray.array3d(self.screen)
+            return np.transpose(data, (1, 0, 2))
+        elif self.render_mode == 'human':
+            pygame.display.flip()
+            self.clock.tick(self.metadata['render_fps'])
+
+    def draw(self):
+        """绘制函数 - 与原版本完全一致"""
+        fixed_cam = self.world_size
         self.screen.fill((255, 255, 255))
 
-        # 绘制目标
-        for target_pos in self.target_pos:
-            screen_pos = self._world_to_screen(target_pos)
-            pygame.draw.circle(self.screen, (255, 0, 0), screen_pos, 8)
+        def to_screen(pos):
+            x, y = pos
+            y = -y  # y 轴翻转
+            sx = int((x / fixed_cam) * (self.width / 2) + self.width / 2)
+            sy = int((y / fixed_cam) * (self.height / 2) + self.height / 2)
+            return sx, sy
 
-        # 绘制UAV
-        for i in self.active_agents:
-            screen_pos = self._world_to_screen(self.agent_pos[i])
-            color = (0, 0, 255) if i in self.active_agents else (128, 128, 128)
-            pygame.draw.circle(self.screen, color, screen_pos, 12)
+        # 画目标点
+        for tpos in self.target_pos:
+            sx, sy = to_screen(tpos)
+            pygame.draw.circle(self.screen, (0, 255, 0), (sx, sy), 5)
 
-            # 绘制感知范围
-            sensing_radius = int(self.sensing_range * self.screen_size / (2 * self.world_size))
-            pygame.draw.circle(self.screen, (0, 255, 0), screen_pos, sensing_radius, 1)
+        # 存储无人机屏幕位置用于连线
+        screen_positions = []
 
-        # 显示实验信息
-        font = pygame.font.Font(None, 24)
-        experiment_text = f"实验类型: {self.experiment_type}"
+        for i, apos in enumerate(self.agent_pos):
+            sx, sy = to_screen(apos)
+            screen_positions.append((sx, sy))
+
+            # 绘制无人机图像或默认图形
+            if not hasattr(self, 'drone_image'):
+                path = os.path.dirname(__file__)
+                img = os.path.join(path, 'UAV.png')
+                if os.path.exists(img):
+                    self.drone_image = pygame.transform.scale(pygame.image.load(img), (30, 30))
+                else:
+                    self.drone_image = None
+            if self.drone_image:
+                rect = self.drone_image.get_rect(center=(sx, sy))
+                self.screen.blit(self.drone_image, rect)
+            else:
+                pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), 8)
+
+            # 绘制探测半径圆圈（实线）
+            coverage_radius_px = int((self.coverage_radius / fixed_cam) * (self.width/2))
+            pygame.draw.circle(self.screen, (0, 0, 255), (sx, sy), coverage_radius_px, 1)
+
+            # 绘制通信半径圆圈（蓝色虚线）
+            comm_radius_px = int((self.communication_range / fixed_cam) * (self.width/2))
+            # 创建虚线效果
+            num_segments = 80  # 虚线段数
+            for j in range(num_segments):
+                if j % 2 == 0:  # 只画偶数段，形成虚线
+                    start_angle = 2 * np.pi * j / num_segments
+                    end_angle = 2 * np.pi * (j + 1) / num_segments
+                    # 计算弧段的起点和终点
+                    start_pos = (
+                        sx + int(comm_radius_px * np.cos(start_angle)),
+                        sy + int(comm_radius_px * np.sin(start_angle))
+                    )
+                    end_pos = (
+                        sx + int(comm_radius_px * np.cos(end_angle)),
+                        sy + int(comm_radius_px * np.sin(end_angle))
+                    )
+                    # 画虚线段
+                    pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)  # 使用浅蓝色
+
+        # 画红线：若两个无人机之间的距离小于通信范围
+        for i in range(self.num_agents):
+            for j in range(i + 1, self.num_agents):
+                dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+                if dist <= self.communication_range:
+                    pygame.draw.line(self.screen, (255, 0, 0),
+                                    screen_positions[i], screen_positions[j], 1)
+
+        # 显示文字信息（使用预初始化的字体）
+        if self.font is None:
+            # 如果字体未初始化，使用简单备选
+            font = pygame.font.Font(None, 24)
+        else:
+            font = self.font
+
+        # 显示实验类型（使用英文避免编码问题）
+        experiment_text = f"Experiment: {self.experiment_type}"
         text_surface = font.render(experiment_text, True, (0, 0, 0))
         self.screen.blit(text_surface, (10, 10))
 
-        step_text = f"步数: {self.curr_step}/{self.max_steps}"
+        # 显示步数
+        step_text = f"Step: {self.curr_step}/{self.max_steps}"
         text_surface = font.render(step_text, True, (0, 0, 0))
-        self.screen.blit(text_surface, (10, 35))
+        self.screen.blit(text_surface, (10, 40))
 
-        uav_text = f"活跃UAV: {len(self.active_agents)}/{self.num_agents}"
+        # 显示活跃UAV数量
+        uav_text = f"Active UAVs: {len(self.active_agents)}/{self.num_agents}"
         text_surface = font.render(uav_text, True, (0, 0, 0))
-        self.screen.blit(text_surface, (10, 60))
+        self.screen.blit(text_surface, (10, 70))
 
-        pygame.display.flip()
-        self.clock.tick(60)
+        # 显示覆盖率信息
+        coverage_rate, _, _, _ = self.calculate_coverage_complete()
+        coverage_text = f"Coverage: {coverage_rate:.3f}"
+        text_surface = font.render(coverage_text, True, (0, 0, 0))
+        self.screen.blit(text_surface, (10, 100))
 
-    def _render_rgb_array(self):
-        """返回RGB数组"""
-        if self.screen is None:
-            self._render_human()
+        # 显示episode计划信息
+        if hasattr(self, 'episode_plan'):
+            plan_type = self.episode_plan.get('type', 'unknown')
+            trigger_step = self.episode_plan.get('trigger_step', None)
+            executed = self.episode_plan.get('executed', False)
 
-        # 获取屏幕内容
-        rgb_array = pygame.surfarray.array3d(self.screen)
-        rgb_array = np.transpose(rgb_array, (1, 0, 2))
-        return rgb_array
+            plan_text = f"Plan: {plan_type}"
+            if trigger_step:
+                plan_text += f" (step {trigger_step})"
+            if executed:
+                plan_text += " [done]"
 
-    def _world_to_screen(self, world_pos):
-        """世界坐标转屏幕坐标"""
-        x = int((world_pos[0] + self.world_size) / (2 * self.world_size) * self.screen_size)
-        y = int((world_pos[1] + self.world_size) / (2 * self.world_size) * self.screen_size)
-        return (x, y)
+            text_surface = font.render(plan_text, True, (0, 0, 255))
+            self.screen.blit(text_surface, (10, 130))
+
+
 
     # GAT相关方法 - 保持原有接口
     def get_gat_parameters(self):
