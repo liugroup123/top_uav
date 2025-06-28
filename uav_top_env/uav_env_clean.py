@@ -53,11 +53,11 @@ class UAVEnv(gym.Env):
         self.max_coverage_rate = 0.0
         
         # 物理参数（与原版本保持一致）
-        self.max_speed = 4.0                    
+        self.max_speed = 2.0                    
         self.max_accel = 1.5   #实际上没有用上这个加速度的功能                 
-        self.communication_range = 0.6          # 原版本: 0.6
-        self.coverage_radius = 0.3              # 原版本: 0.3 (sensing_range改名)
-        self.sensing_range = 0.3                # 与coverage_radius保持一致
+        self.communication_range = 0.8          # 原版本: 0.6
+        self.coverage_radius = 0.4              # 原版本: 0.3 (sensing_range改名)
+        self.sensing_range = 0.4              # 与coverage_radius保持一致
         self.dt = 0.1                           # 原版本: 0.1
         
         # 拓扑参数
@@ -71,9 +71,9 @@ class UAVEnv(gym.Env):
         self.stability_weight = 1.5
         
         # 概率设置（用于probabilistic模式）
-        self.normal_probability = 0.80
-        self.loss_probability = 0.15
-        self.addition_probability = 0.05
+        self.normal_probability = 0.60
+        self.loss_probability = 0.25
+        self.addition_probability = 0.15
         
         # 状态变量
         self.curr_step = 0
