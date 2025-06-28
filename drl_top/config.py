@@ -1,8 +1,8 @@
 CONFIG = {
     "render_mode": "rgb_array",
     # "render_mode": "None",
-    "num_episodes": 10000,
-    "max_steps": 200,                    # 修正键名
+    "num_episodes": 8000,
+    "max_steps": 300,                    # 修正键名
     "max_steps_per_episode": 200,        # 保持兼容性
     "seed": 0,
     "actor_lr": 1e-4,
