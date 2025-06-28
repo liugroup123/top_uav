@@ -137,6 +137,10 @@ class UAVEnv(gym.Env):
         # 历史记录
         self.coverage_history = []
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
+
+        # 动作平滑参数
+        self.action_smooth_alpha = 0.7  # 平滑系数，0.7表示70%新动作+30%旧动作
+        self.enable_action_smoothing = True  # 是否启用平滑
         
     def _setup_spaces(self):
         """设置观察和动作空间 - 保持原有格式"""
@@ -235,6 +239,10 @@ class UAVEnv(gym.Env):
         """执行一步 - 添加基于连接性的速度限制"""
         self.curr_step += 1
 
+        # 动作平滑处理
+        if self.enable_action_smoothing:
+            actions = self._smooth_actions(actions)
+
         # 计算当前步的动态速度限制
         speed_limits = self._compute_connectivity_based_speed_limits()
         self.speed_limits_history.append(speed_limits.copy())
@@ -284,7 +292,7 @@ class UAVEnv(gym.Env):
                 self.agent_pos[i] = np.clip(self.agent_pos[i],
                                           -self.world_size, self.world_size)
 
-                # 记录动作
+                # 记录动作（记录平滑后的动作用于下一步）
                 self.prev_actions[i] = action
         
         # 检查拓扑变化
@@ -621,6 +629,26 @@ class UAVEnv(gym.Env):
 
         return total_compliance / max(active_count, 1)
 
+    def _smooth_actions(self, actions):
+        """动作平滑处理 - 使用指数移动平均"""
+        smoothed_actions = {}
+
+        for i, agent in enumerate(self.agents):
+            if agent in actions and i < len(self.prev_actions):
+                raw_action = np.array(actions[agent], dtype=np.float32)
+                prev_action = self.prev_actions[i]
+
+                # 指数移动平均平滑
+                smooth_action = (self.action_smooth_alpha * raw_action +
+                               (1 - self.action_smooth_alpha) * prev_action)
+
+                smoothed_actions[agent] = smooth_action
+            else:
+                # 如果没有历史动作或智能体不存在，使用原动作
+                smoothed_actions[agent] = actions[agent] if agent in actions else np.zeros(2)
+
+        return smoothed_actions
+
     def close(self):
         """关闭环境 - 与原版本一致"""
         if self.screen is not None:
@@ -880,6 +908,9 @@ class UAVEnv(gym.Env):
         """使UAV失效 - 兼容性方法"""
         if uav_idx in self.active_agents:
             self.active_agents.remove(uav_idx)
+            # 清零失效UAV的历史动作，避免影响平滑
+            if uav_idx < len(self.prev_actions):
+                self.prev_actions[uav_idx] = np.zeros(2, dtype=np.float32)
             return True
         return False
 
@@ -891,6 +922,9 @@ class UAVEnv(gym.Env):
             self.active_agents.append(new_uav)
             self.agent_pos[new_uav] = np.random.uniform(-self.world_size, self.world_size, 2)
             self.agent_vel[new_uav] = np.zeros(2)
+            # 重置新激活UAV的历史动作
+            if new_uav < len(self.prev_actions):
+                self.prev_actions[new_uav] = np.zeros(2, dtype=np.float32)
             return new_uav
         return None
 
