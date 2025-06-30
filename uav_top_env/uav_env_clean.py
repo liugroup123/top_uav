@@ -127,10 +127,10 @@ class UAVEnv(gym.Env):
         # 观察和动作空间（保持原有格式）
         self._setup_spaces()
         
-        # 渲染相关
+        # 渲染相关 - 提高分辨率以改善视频画质
         self.screen = None
         self.clock = None
-        self.width, self.height = (700, 700)
+        self.width, self.height = (1200, 1200)  # 从700x700提升到1200x1200
         self.metadata = {"render_fps": 60}
         self.font = None
         

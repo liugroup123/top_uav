@@ -18,6 +18,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import time
+import imageio  # 简化视频保存
 
 # 导入简化环境和MATD3
 import importlib.util
@@ -31,9 +32,10 @@ from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
 
 # 获取当前文件目录路径
-model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模型保存文件夹
-video_dir = os.path.join(current_dir, './output_clean_env/videos/test1')  # 视频保存文件夹
-runs_dir = os.path.join(current_dir, './output_clean_env/runs/test1')  # TensorBoard 日志文件夹
+# 简化路径设置，修复TensorBoard路径问题
+model_dir = './output_clean_env/models/test1'  # 简化路径
+video_dir = './output_clean_env/videos/test1'  # 简化路径
+runs_dir = './runs/test1'  # TensorBoard专用简化路径
 
 # 创建目录
 os.makedirs(model_dir, exist_ok=True)
@@ -264,10 +266,13 @@ def main():
         episode_rewards.append(episode_reward)
         episode_coverages.append(final_coverage_rate)
 
-        # 保存视频
+        # 保存视频 - 简化方式 (参考动态环境)
         if record_video and frames:
             video_path = f"{video_dir}/episode_{episode}.mp4"
-            save_video(frames, video_path, fps=60)  # 提高帧率到60fps
+            with imageio.get_writer(video_path, fps=60) as video:
+                for frame in frames:
+                    video.append_data(frame)
+            print(f"视频已保存到 {video_path}")
 
         # 定期保存模型
         if episode % 500 == 0:
@@ -295,80 +300,9 @@ def main():
     env.close()
     writer.close()
 
-def save_video(frames, path, fps=60):
-    """保存视频 - 高质量版本"""
-    if not frames:
-        print(f"⚠️  没有帧数据，跳过视频保存: {path}")
-        return
 
-    try:
-        # 检查帧格式
-        first_frame = frames[0]
-        if first_frame is None:
-            print(f"❌ 第一帧为None，无法保存视频: {path}")
-            return
 
-        height, width, channels = first_frame.shape
-        print(f"📹 保存视频: {path} ({width}x{height}, {len(frames)}帧, {fps}fps)")
 
-        # 优先使用高质量编码器
-        codecs_to_try = [
-            ('mp4v', '.mp4'),      # 最兼容
-            ('XVID', '.avi'),      # 高质量
-            ('MJPG', '.avi'),      # 无损
-            ('H264', '.mp4'),      # 现代编码器
-            ('X264', '.mp4')       # 备选
-        ]
-
-        success = False
-        for codec, ext in codecs_to_try:
-            try:
-                # 根据编码器调整文件扩展名
-                if not path.endswith(ext):
-                    adjusted_path = path.rsplit('.', 1)[0] + ext
-                else:
-                    adjusted_path = path
-
-                fourcc = cv2.VideoWriter_fourcc(*codec)
-                out = cv2.VideoWriter(adjusted_path, fourcc, fps, (width, height))
-
-                if not out.isOpened():
-                    continue
-
-                # 写入所有帧
-                for i, frame in enumerate(frames):
-                    if frame is not None and frame.shape == (height, width, channels):
-                        # 确保帧是uint8格式
-                        if frame.dtype != np.uint8:
-                            frame = (frame * 255).astype(np.uint8) if frame.max() <= 1.0 else frame.astype(np.uint8)
-
-                        # 转换颜色格式 RGB -> BGR
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        out.write(frame_bgr)
-                    else:
-                        print(f"⚠️  跳过无效帧 {i}")
-
-                out.release()
-
-                # 检查文件是否成功创建
-                if os.path.exists(adjusted_path) and os.path.getsize(adjusted_path) > 0:
-                    print(f"✅ 视频保存成功: {adjusted_path} (编码器: {codec})")
-                    success = True
-                    break
-                else:
-                    print(f"❌ 编码器 {codec} 失败")
-
-            except Exception as e:
-                print(f"❌ 编码器 {codec} 出错: {e}")
-                continue
-
-        if not success:
-            print(f"❌ 所有编码器都失败，无法保存视频: {path}")
-
-    except Exception as e:
-        print(f"❌ 视频保存出错: {e}")
-        import traceback
-        traceback.print_exc()
 
 if __name__ == '__main__':
     main()
