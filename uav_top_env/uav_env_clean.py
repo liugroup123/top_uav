@@ -9,6 +9,7 @@ import torch
 import gym
 from gym import spaces
 import cv2
+import networkx as nx
 
 # 动态导入GAT模型
 import importlib.util
@@ -62,11 +63,12 @@ class UAVEnv(gym.Env):
         self.min_active_agents = min_active_agents
         self.max_active_agents = max_active_agents or num_agents
         
-        # 奖励权重
-        self.coverage_weight = 3.5
-        self.connectivity_weight = 2.0
-        self.boundary_weight = 1.0
-        self.stability_weight = 1.5
+        # 新的奖励权重 (基于动态避障实验调整)
+        self.connectivity_weight = 1.0      # 连通性权重
+        self.coverage_weight = 20.0         # 覆盖权重 (降低)
+        self.stability_weight = 0.5         # 稳定性权重
+        self.topology_weight = 5.0          # 拓扑适应权重 (新增)
+        self.boundary_weight = 1.0          # 保留边界权重
         
         # 拓扑实验概率
         self.normal_probability = 0.60
@@ -139,6 +141,18 @@ class UAVEnv(gym.Env):
         # 加速度控制参数
         self.max_acceleration = 4.0  # 最大加速度
         self.damping_factor = 0.95   # 阻尼系数（可选）
+
+        # 稳定性奖励参数 (移植自动态避障实验)
+        self.training_step = 0
+        self.initial_threshold = 0.6
+        self.threshold_increase_rate = 0.0001
+        self.max_threshold = 0.95
+        self.stability_bonus_value = 50.0
+        self.speed_tolerance = 0.1
+
+        # 覆盖奖励参数
+        self.covered_targets = set()  # 已覆盖的目标集合
+        self.unique_coverage_weight = 30.0
         
     def _setup_spaces(self):
         """设置观察和动作空间 - 保持原有格式"""
@@ -170,6 +184,9 @@ class UAVEnv(gym.Env):
         self.curr_step = 0
         self.max_coverage_rate = 0.0
         self.active_agents = list(range(self.num_agents))
+
+        # 重置奖励相关参数
+        self.covered_targets = set()  # 重置已覆盖目标集合
         
         # 初始化UAV位置（与原版本一致：底部排列）
         self.agent_pos = []
@@ -529,48 +546,234 @@ class UAVEnv(gym.Env):
         return len(visited) == len(active_indices)
 
     def _compute_rewards(self, speed_violations=None):
-        """计算奖励 - 包含速度限制相关奖励"""
+        """计算奖励"""
+        self.training_step += 1
         rewards = {}
 
-        # 计算覆盖率
-        coverage_rate, _, _, _ = self.calculate_coverage_complete()
+        # 1. 计算全局奖励组件
+        connectivity_reward = self._compute_connectivity_reward_advanced()
+        coverage_reward = self._compute_coverage_reward_advanced()
+        stability_reward = self._compute_stability_reward_advanced()
+        topology_reward = self._compute_topology_adaptation_reward()
 
-        # 计算连通性
-        connectivity_reward = self._compute_connectivity_reward()
+        # 2. 全局奖励
+        global_reward = (connectivity_reward * self.connectivity_weight +
+                        coverage_reward * self.coverage_weight +
+                        stability_reward * self.stability_weight +
+                        topology_reward * self.topology_weight)
 
-        # 计算稳定性
-        stability_reward = self._compute_stability_reward()
-
-        # 计算速度合规奖励
-        speed_compliance_reward = self._compute_speed_compliance_reward(speed_violations)
-
-        # 基础奖励（加入速度合规）
-        base_reward = (
-            self.coverage_weight * coverage_rate +
-            self.connectivity_weight * connectivity_reward +
-            self.stability_weight * stability_reward +
-            0.1 * speed_compliance_reward  # 速度合规权重
-        )
-
+        # 3. 为每个智能体分配奖励
         for i, agent in enumerate(self.agents):
             if i in self.active_agents:
-                reward = base_reward
+                # 个体奖励 = 全局奖励 + 个体特定奖励
+                individual_reward = self._compute_individual_reward(i)
+                boundary_penalty = self._calculate_boundary_penalty(i)
 
-                # 边界惩罚
-                if np.any(np.abs(self.agent_pos[i]) > self.world_size - 0.1):
-                    reward -= self.boundary_weight
-
-                # 个体速度违规惩罚
-                if speed_violations and agent in speed_violations:
-                    violation = speed_violations[agent]['violation']
-                    if violation > 0:
-                        reward += self.speed_violation_penalty * violation
-
-                rewards[agent] = reward
+                total_reward = global_reward + individual_reward + boundary_penalty
+                rewards[agent] = total_reward / 100.0  # 缩放到合理范围
             else:
                 rewards[agent] = 0.0
 
         return rewards
+
+    def _compute_connectivity_reward_advanced(self):
+        """计算连通性奖励 """
+        # 构建通信图
+        G = nx.Graph()
+        active_agents = list(self.active_agents)
+
+        # 添加节点
+        for i in active_agents:
+            G.add_node(i)
+
+        # 添加边 (通信连接)
+        for i in active_agents:
+            for j in active_agents:
+                if i >= j:
+                    continue
+                dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+                if dist <= self.communication_range:
+                    G.add_edge(i, j)
+
+        # 计算代数连通度
+        try:
+            if len(active_agents) <= 1:
+                λ2 = 0
+            else:
+                λ2 = nx.algebraic_connectivity(G)
+        except:
+            λ2 = 0  # 如果图不连通，则连通度为0
+
+        # 分级奖励 (移植自原实验)
+        if λ2 == 0:
+            return -3
+        elif λ2 < 0.2:
+            return -0.5
+        else:
+            return 0
+
+    def _compute_coverage_reward_advanced(self):
+        """计算覆盖奖励 """
+        # 1. 计算唯一覆盖率
+        coverage_rate, _, _, _ = self.calculate_coverage_complete()
+
+        # 2. 计算平均最小距离
+        if len(self.active_agents) == 0:
+            return 0
+
+        agent_positions = np.array([self.agent_pos[i] for i in self.active_agents])
+        target_positions = self.target_pos
+
+        # 计算每个目标到最近UAV的距离
+        distances = np.linalg.norm(agent_positions[:, None, :] - target_positions[None, :, :], axis=2)
+        min_distances = np.min(distances, axis=0)
+        avg_min_distance = np.mean(min_distances)
+        clipped_avg_min_distance = np.clip(avg_min_distance, 0, 15)
+
+        # 3. 复合奖励 (覆盖率^1.5 × 平均距离)
+        r_s_d = (coverage_rate ** 1.5) * clipped_avg_min_distance
+
+        # 4. 权重调整
+        k_1 = 35 * len(self.active_agents)
+        return k_1 * r_s_d
+
+    def _compute_stability_reward_advanced(self):
+        """计算稳定性奖励 """
+        stability_reward = 0
+        coverage_rate, _, _, _ = self.calculate_coverage_complete()
+
+        # 动态阈值计算
+        dynamic_threshold = min(self.initial_threshold + self.training_step * self.threshold_increase_rate,
+                               self.max_threshold)
+
+        # 检查是否所有智能体都符合稳定条件
+        all_agents_stable = True
+
+        if coverage_rate >= dynamic_threshold:
+            for i in self.active_agents:
+                # 获取当前智能体的速度
+                current_speed = np.linalg.norm(self.agent_vel[i])
+
+                # 检查该智能体是否满足速度条件
+                if current_speed > self.max_speed * self.speed_tolerance:
+                    all_agents_stable = False
+                    break
+
+            # 如果所有智能体都满足稳定条件，给予整体奖励
+            if all_agents_stable:
+                stability_reward += self.stability_bonus_value
+
+        return stability_reward * 0.5  # 调整权重
+
+    def _compute_topology_adaptation_reward(self):
+        """计算拓扑适应奖励"""
+        if not hasattr(self, 'episode_plan'):
+            return 0
+
+        # 如果发生了拓扑变化
+        if self.episode_plan.get('executed', False):
+            coverage_rate, _, _, _ = self.calculate_coverage_complete()
+
+            # 拓扑变化后的适应性奖励
+            if coverage_rate > 0.7:  # 快速恢复高覆盖率
+                return 10.0
+            elif coverage_rate > 0.5:  # 中等恢复
+                return 5.0
+            else:  # 恢复较慢
+                return -2.0
+
+        return 0
+
+    def _compute_individual_reward(self, agent_idx):
+        """计算个体奖励 """
+        reward = 0
+
+        # 1. 唯一覆盖奖励
+        unique_coverage_reward = 0.0
+        agent_pos = self.agent_pos[agent_idx]
+
+        for target_pos in self.target_pos:
+            if np.linalg.norm(agent_pos - target_pos) < self.coverage_radius:
+                # 检查是否只有当前无人机覆盖该目标点
+                covered_by_others = False
+                for other_idx in self.active_agents:
+                    if other_idx == agent_idx:
+                        continue
+                    if np.linalg.norm(self.agent_pos[other_idx] - target_pos) < self.coverage_radius:
+                        covered_by_others = True
+                        break
+
+                if not covered_by_others:
+                    unique_coverage_reward += 1.0
+
+        reward += unique_coverage_reward * self.unique_coverage_weight
+
+        # 2. 智能体间距离奖励/惩罚 (适配拓扑环境)
+        detection_radius = self.communication_range * 0.5
+        min_radius = detection_radius
+        max_radius = 2 * detection_radius
+
+        for other_idx in self.active_agents:
+            if other_idx == agent_idx:
+                continue
+            dist = np.linalg.norm(agent_pos - self.agent_pos[other_idx])
+            if dist < 0.75 * min_radius:
+                reward -= 2  # 过近惩罚
+            elif min_radius <= dist <= max_radius:
+                reward += 1.0  # 适当距离奖励
+
+        return reward
+
+    def _calculate_boundary_penalty(self, agent_idx):
+        """
+        计算边界惩罚 - 移植并适配自动态避障实验
+        适配您的拓扑UAV环境，简化并调整参数
+        """
+        penalty = 0.0
+        agent_pos = self.agent_pos[agent_idx]
+
+        # 适配参数 (比原版温和)
+        max_penalty = 50.0           # 降低惩罚上限
+        boundary_limit = self.world_size  # 使用环境的world_size (1.0)
+        safe_margin = 0.1            # 安全边距
+        penalty_factor = 10.0        # 降低惩罚因子
+        penalty_exponent = 2.0       # 降低指数斜率
+
+        # 检查每个维度 (x, y)
+        for dim in range(2):
+            pos = agent_pos[dim]
+
+            # 1. 检查接近负边界 (pos < -boundary_limit + safe_margin)
+            if pos < -boundary_limit + safe_margin:
+                distance_to_boundary = (-boundary_limit + safe_margin) - pos
+                if distance_to_boundary > 0:
+                    # 温和的指数惩罚
+                    penalty -= penalty_factor * np.exp(penalty_exponent * distance_to_boundary)
+                    penalty = np.clip(penalty, -max_penalty, 0)
+
+            # 2. 检查超出负边界 (pos < -boundary_limit)
+            if pos < -boundary_limit:
+                distance_outside = -boundary_limit - pos
+                # 严厉的超出边界惩罚
+                penalty -= penalty_factor * 2 * np.exp(penalty_exponent * distance_outside)
+                penalty = np.clip(penalty, -max_penalty * 2, 0)
+
+            # 3. 检查接近正边界 (pos > boundary_limit - safe_margin)
+            if pos > boundary_limit - safe_margin:
+                distance_to_boundary = pos - (boundary_limit - safe_margin)
+                if distance_to_boundary > 0:
+                    # 温和的指数惩罚
+                    penalty -= penalty_factor * np.exp(penalty_exponent * distance_to_boundary)
+                    penalty = np.clip(penalty, -max_penalty, 0)
+
+            # 4. 检查超出正边界 (pos > boundary_limit)
+            if pos > boundary_limit:
+                distance_outside = pos - boundary_limit
+                # 严厉的超出边界惩罚
+                penalty -= penalty_factor * 2 * np.exp(penalty_exponent * distance_outside)
+                penalty = np.clip(penalty, -max_penalty * 2, 0)
+
+        return penalty
 
     def _compute_speed_compliance_reward(self, speed_violations):
         """计算速度合规奖励"""
@@ -692,34 +895,7 @@ class UAVEnv(gym.Env):
 
         return coverage_rate, fully_connected, self.max_coverage_rate, unconnected_count
 
-    def _compute_connectivity_reward(self):
-        """计算连通性奖励"""
-        if len(self.active_agents) <= 1:
-            return 1.0
 
-        connected_count = 0
-        for i in self.active_agents:
-            for j in self.active_agents:
-                if i != j:
-                    distance = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
-                    if distance <= self.communication_range:
-                        connected_count += 1
-                        break
-
-        return connected_count / len(self.active_agents)
-
-    def _compute_stability_reward(self):
-        """计算稳定性奖励"""
-        # 简化的稳定性计算
-        if len(self.coverage_history) < 2:
-            return 0.0
-
-        recent_coverage = self.coverage_history[-10:] if len(self.coverage_history) >= 10 else self.coverage_history
-        if len(recent_coverage) < 2:
-            return 0.0
-
-        stability = 1.0 - np.std(recent_coverage)
-        return max(0.0, stability)
 
     def render(self):
         """渲染环境 - 与原版本完全一致"""
