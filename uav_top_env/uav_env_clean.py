@@ -52,25 +52,23 @@ class UAVEnv(gym.Env):
         self.curr_step = 0
         self.max_coverage_rate = 0.0
         
-        # 物理参数（与原版本保持一致）
-        self.max_speed = 2.0                    
-        self.max_accel = 1.5   #实际上没有用上这个加速度的功能                 
-        self.communication_range = 0.8          # 原版本: 0.6
-        self.coverage_radius = 0.4              # 原版本: 0.3 (sensing_range改名)
-        self.sensing_range = 0.4              # 与coverage_radius保持一致
-        self.dt = 0.1                           # 原版本: 0.1
+        # 物理参数
+        self.max_speed = 2.0
+        self.communication_range = 0.8
+        self.coverage_radius = 0.4
+        self.dt = 0.1
         
         # 拓扑参数
         self.min_active_agents = min_active_agents
         self.max_active_agents = max_active_agents or num_agents
         
-        # 奖励权重（保持原有设置）
+        # 奖励权重
         self.coverage_weight = 3.5
         self.connectivity_weight = 2.0
         self.boundary_weight = 1.0
         self.stability_weight = 1.5
         
-        # 概率设置（用于probabilistic模式）
+        # 拓扑实验概率
         self.normal_probability = 0.60
         self.loss_probability = 0.25
         self.addition_probability = 0.15
@@ -92,19 +90,19 @@ class UAVEnv(gym.Env):
             'executed': False
         }
 
-        # GAT缓存优化 - 减少CPU-GPU传输
+        # GAT缓存
         self.gat_cache = {
             'features': None,
             'last_update_step': -1,
-            'update_interval': 3  # 每3步更新一次GAT特征
+            'update_interval': 3
         }
 
-        # 速度限制参数 - 基于连接性的动态约束
-        self.max_base_speed = 1.0           # 基础最大速度（与max_speed一致）
-        self.connectivity_speed_factor = 0.5 # 连接性影响因子
-        self.min_speed_limit = 0.2          # 最小速度限制（调整比例）
-        self.epsilon = 0.1                  # 连接性容忍度参数（调整比例）
-        self.speed_violation_penalty = -5.0 # 速度违规惩罚
+        # 速度限制参数
+        self.max_base_speed = 1.0
+        self.connectivity_speed_factor = 0.5
+        self.min_speed_limit = 0.2
+        self.epsilon = 0.1
+        self.speed_violation_penalty = -5.0
 
         # 连接性历史记录
         self.connectivity_history = []
@@ -130,17 +128,17 @@ class UAVEnv(gym.Env):
         # 渲染相关
         self.screen = None
         self.clock = None
-        self.width, self.height = (700, 700)  # 保持与原版本一致
-        self.metadata = {"render_fps": 60}  # 与原版本一致
-        self.font = None  # 字体对象
+        self.width, self.height = (700, 700)
+        self.metadata = {"render_fps": 60}
+        self.font = None
         
         # 历史记录
         self.coverage_history = []
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
 
-        # 动作平滑参数
-        self.action_smooth_alpha = 0.7  # 平滑系数，0.7表示70%新动作+30%旧动作
-        self.enable_action_smoothing = True  # 是否启用平滑
+        # 加速度控制参数
+        self.max_acceleration = 4.0  # 最大加速度
+        self.damping_factor = 0.95   # 阻尼系数（可选）
         
     def _setup_spaces(self):
         """设置观察和动作空间 - 保持原有格式"""
@@ -236,12 +234,8 @@ class UAVEnv(gym.Env):
               (f" (第{trigger_step}步触发)" if trigger_step else ""))
     
     def step(self, actions):
-        """执行一步 - 添加基于连接性的速度限制"""
+        """执行一步 - 使用加速度控制"""
         self.curr_step += 1
-
-        # 动作平滑处理
-        if self.enable_action_smoothing:
-            actions = self._smooth_actions(actions)
 
         # 计算当前步的动态速度限制
         speed_limits = self._compute_connectivity_based_speed_limits()
@@ -250,49 +244,16 @@ class UAVEnv(gym.Env):
         # 记录速度违规情况
         speed_violations = {}
 
-        # 执行动作（应用速度限制）
+        # 执行动作（加速度控制）
         for i, agent in enumerate(self.agents):
             if i in self.active_agents and agent in actions:
                 action = np.array(actions[agent], dtype=np.float32)
                 action = np.clip(action, -1.0, 1.0)
 
-                # 计算期望速度
-                desired_velocity = action * self.max_speed
-                desired_speed = np.linalg.norm(desired_velocity)
+                # 更新智能体速度和位置
+                self._update_agent_dynamics(i, action, speed_limits[i], speed_violations, agent)
 
-                # 应用动态速度限制
-                speed_limit = speed_limits[i]
-                if desired_speed > speed_limit:
-                    # 速度超限，按比例缩放
-                    if desired_speed > 0:
-                        scale_factor = speed_limit / desired_speed
-                        actual_velocity = desired_velocity * scale_factor
-                    else:
-                        actual_velocity = desired_velocity
-
-                    # 记录违规
-                    speed_violations[agent] = {
-                        'desired_speed': desired_speed,
-                        'limit': speed_limit,
-                        'violation': desired_speed - speed_limit
-                    }
-                else:
-                    actual_velocity = desired_velocity
-                    speed_violations[agent] = {
-                        'desired_speed': desired_speed,
-                        'limit': speed_limit,
-                        'violation': 0.0
-                    }
-
-                # 更新速度和位置（使用正确的物理模型）
-                self.agent_vel[i] = actual_velocity
-                self.agent_pos[i] += self.agent_vel[i] * self.dt  # 位置 = 位置 + 速度 × 时间
-
-                # 边界处理
-                self.agent_pos[i] = np.clip(self.agent_pos[i],
-                                          -self.world_size, self.world_size)
-
-                # 记录动作（记录平滑后的动作用于下一步）
+                # 记录原始动作
                 self.prev_actions[i] = action
         
         # 检查拓扑变化
@@ -439,7 +400,7 @@ class UAVEnv(gym.Env):
         # 创建邻接矩阵
         uav_adj, uav_target_adj = create_adjacency_matrices(
             uav_pos_tensor, target_pos_tensor,
-            self.communication_range, self.sensing_range,
+            self.communication_range, self.coverage_radius,
             active_uavs=self.active_agents
         )
 
@@ -629,25 +590,54 @@ class UAVEnv(gym.Env):
 
         return total_compliance / max(active_count, 1)
 
-    def _smooth_actions(self, actions):
-        """动作平滑处理 - 使用指数移动平均"""
-        smoothed_actions = {}
+    def _update_agent_dynamics(self, agent_idx, action, speed_limit, speed_violations, agent_name):
+        """更新单个智能体的动力学状态（加速度控制）"""
+        # 1. 动作转换为加速度
+        acceleration = action * self.max_acceleration
 
-        for i, agent in enumerate(self.agents):
-            if agent in actions and i < len(self.prev_actions):
-                raw_action = np.array(actions[agent], dtype=np.float32)
-                prev_action = self.prev_actions[i]
+        # 2. 更新速度（积分）
+        new_velocity = self.agent_vel[agent_idx] + acceleration * self.dt
 
-                # 指数移动平均平滑
-                smooth_action = (self.action_smooth_alpha * raw_action +
-                               (1 - self.action_smooth_alpha) * prev_action)
+        # 3. 应用阻尼
+        new_velocity *= self.damping_factor
 
-                smoothed_actions[agent] = smooth_action
+        # 4. 应用连接性速度限制
+        current_speed = np.linalg.norm(new_velocity)
+
+        if current_speed > speed_limit:
+            # 速度超限，按比例缩放
+            if current_speed > 0:
+                scale_factor = speed_limit / current_speed
+                actual_velocity = new_velocity * scale_factor
             else:
-                # 如果没有历史动作或智能体不存在，使用原动作
-                smoothed_actions[agent] = actions[agent] if agent in actions else np.zeros(2)
+                actual_velocity = new_velocity
 
-        return smoothed_actions
+            # 记录违规
+            speed_violations[agent_name] = {
+                'desired_speed': current_speed,
+                'limit': speed_limit,
+                'violation': current_speed - speed_limit
+            }
+        else:
+            actual_velocity = new_velocity
+            speed_violations[agent_name] = {
+                'desired_speed': current_speed,
+                'limit': speed_limit,
+                'violation': 0.0
+            }
+
+        # 5. 应用最大速度限制
+        final_speed = np.linalg.norm(actual_velocity)
+        if final_speed > self.max_speed:
+            actual_velocity = actual_velocity * (self.max_speed / final_speed)
+
+        # 6. 更新速度和位置
+        self.agent_vel[agent_idx] = actual_velocity
+        self.agent_pos[agent_idx] += self.agent_vel[agent_idx] * self.dt
+
+        # 7. 边界处理
+        self.agent_pos[agent_idx] = np.clip(self.agent_pos[agent_idx],
+                                          -self.world_size, self.world_size)
 
     def close(self):
         """关闭环境 - 与原版本一致"""
@@ -834,13 +824,15 @@ class UAVEnv(gym.Env):
                     # 画虚线段
                     pygame.draw.line(self.screen, (70, 130, 180), start_pos, end_pos, 1)  # 使用浅蓝色
 
-        # 画红线：若两个无人机之间的距离小于通信范围
+        # 画红线：只在活跃无人机之间显示通信连接
         for i in range(self.num_agents):
             for j in range(i + 1, self.num_agents):
-                dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
-                if dist <= self.communication_range:
-                    pygame.draw.line(self.screen, (255, 0, 0),
-                                    screen_positions[i], screen_positions[j], 1)
+                # 只有两个UAV都是活跃状态才显示通信线
+                if i in self.active_agents and j in self.active_agents:
+                    dist = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
+                    if dist <= self.communication_range:
+                        pygame.draw.line(self.screen, (255, 0, 0),
+                                        screen_positions[i], screen_positions[j], 1)
 
         # 显示文字信息（使用预初始化的字体）
         if self.font is None:
@@ -913,7 +905,9 @@ class UAVEnv(gym.Env):
         """使UAV失效 - 兼容性方法"""
         if uav_idx in self.active_agents:
             self.active_agents.remove(uav_idx)
-            # 清零失效UAV的历史动作，避免影响平滑
+            # 清零失效UAV的速度和历史动作
+            if uav_idx < len(self.agent_vel):
+                self.agent_vel[uav_idx] = np.zeros(2, dtype=np.float32)
             if uav_idx < len(self.prev_actions):
                 self.prev_actions[uav_idx] = np.zeros(2, dtype=np.float32)
             return True
@@ -926,7 +920,7 @@ class UAVEnv(gym.Env):
             new_uav = inactive_uavs[0]
             self.active_agents.append(new_uav)
             self.agent_pos[new_uav] = np.random.uniform(-self.world_size, self.world_size, 2)
-            self.agent_vel[new_uav] = np.zeros(2)
+            self.agent_vel[new_uav] = np.zeros(2)  # 新UAV从静止开始
             # 重置新激活UAV的历史动作
             if new_uav < len(self.prev_actions):
                 self.prev_actions[new_uav] = np.zeros(2, dtype=np.float32)
