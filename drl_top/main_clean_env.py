@@ -166,7 +166,7 @@ def main():
     # 训练统计
     episode_rewards = []
     episode_coverages = []
-    max_coverage_rate = 0.0
+    global_max_coverage_rate = 0.0  # 全局最大覆盖率（整个训练过程）
     
     # 噪声参数
     noise_std = CONFIG["noise_std"]
@@ -238,11 +238,11 @@ def main():
 
         # 计算并记录覆盖率
         final_coverage_rate, is_fully_connected, episode_max_coverage, unconnected_uav = env.calculate_coverage_complete()
-        max_coverage_rate = max(final_coverage_rate, max_coverage_rate)
+        global_max_coverage_rate = max(final_coverage_rate, global_max_coverage_rate)  # 更新全局最大值
 
         # 获取episode信息
         episode_type = env.episode_plan['type']
-        trigger_step = env.episode_plan['trigger_step']
+        trigger_step = env.episode_plan['trigger_step'] 
         executed = env.episode_plan['executed']
 
         # 打印详细的episode信息
@@ -258,7 +258,9 @@ def main():
         # 将覆盖率记录到 TensorBoard
         writer.add_scalar('Performance/Coverage_Rate', final_coverage_rate, episode)
         writer.add_scalar('Performance/Episode_Reward', episode_reward, episode)
-        writer.add_scalar('Performance/Max_Coverage_Rate', max_coverage_rate, episode)
+        writer.add_scalar('Performance/Episode_Max_Coverage', episode_max_coverage, episode)  # 每轮最大覆盖率
+        writer.add_scalar('Performance/Global_Max_Coverage', global_max_coverage_rate, episode)  # 全局最大覆盖率
+        writer.add_scalar('Performance/Unconnected_UAVs', unconnected_uav, episode)  # 未连通UAV数量
         writer.add_scalar('Training/Noise_Std', current_noise, episode)
         writer.add_scalar('Training/Active_UAVs', len(env.active_agents), episode)
 
@@ -268,7 +270,7 @@ def main():
 
         # 保存视频 - 简化方式 (参考动态环境)
         if record_video and frames:
-            video_path = f"{video_dir}/{episode}_{max_coverage_rate:.2f}_{final_coverage_rate:.2f}.mp4"
+            video_path = f"{video_dir}/{episode}_{episode_max_coverage:.2f}_{final_coverage_rate:.2f}.mp4"
             with imageio.get_writer(video_path, fps=60) as video:
                 for frame in frames:
                     video.append_data(frame)
@@ -287,7 +289,7 @@ def main():
             print(f"\n📊 Episode {episode} 统计摘要:")
             print(f"   最近100个episodes平均奖励: {avg_reward:.2f}")
             print(f"   最近100个episodes平均覆盖率: {avg_coverage:.3f}")
-            print(f"   当前最大覆盖率: {max_coverage_rate:.3f}")
+            print(f"   全局最大覆盖率: {global_max_coverage_rate:.3f}")
             print(f"   当前噪声水平: {current_noise:.3f}")
             print("-" * 80)
 
