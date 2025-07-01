@@ -142,7 +142,7 @@ class UAVEnv(gym.Env):
         self.prev_actions = np.zeros((self.num_agents, 2), dtype=np.float32)
 
         # 加速度控制参数
-        self.max_acceleration = 4.0  # 最大加速度
+        self.max_acceleration = 0.4  # 最大加速度
         self.damping_factor = 0.95   # 阻尼系数（可选）
 
         # 稳定性奖励参数 (移植自动态避障实验)
