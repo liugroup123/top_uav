@@ -120,9 +120,12 @@ class UAVEnv(gym.Env):
             dropout=0.1,         # dropout率
             device=self.device
         )
+
+        # 设置GAT模型为训练模式
+        self.gat_model.train()
         
         # 训练模式标志
-        self.training = False
+        self.training = True  # 设置为True，让GAT参与训练
         
         # 观察和动作空间（保持原有格式）
         self._setup_spaces()
