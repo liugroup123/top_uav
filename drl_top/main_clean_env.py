@@ -268,7 +268,7 @@ def main():
 
         # 保存视频 - 简化方式 (参考动态环境)
         if record_video and frames:
-            video_path = f"{video_dir}/episode_{episode}.mp4"
+            video_path = f"{video_dir}/{episode}_{max_coverage_rate:.2f}_{final_coverage_rate:.2f}.mp4"
             with imageio.get_writer(video_path, fps=60) as video:
                 for frame in frames:
                     video.append_data(frame)
