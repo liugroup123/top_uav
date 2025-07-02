@@ -32,15 +32,9 @@ from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
 
 # 获取当前文件目录路径
-# 简化路径设置，修复TensorBoard路径问题
-model_dir = './output_clean_env/models/test1'  # 简化路径
-video_dir = './output_clean_env/videos/test1'  # 简化路径
-runs_dir = './runs/test1'  # TensorBoard专用简化路径
-
-# 创建目录
-os.makedirs(model_dir, exist_ok=True)
-os.makedirs(video_dir, exist_ok=True)
-os.makedirs(runs_dir, exist_ok=True)
+model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模型保存文件夹
+video_dir = os.path.join(current_dir, './output_clean_env/videos/test1')  # 视频保存文件夹
+runs_dir = os.path.join(current_dir, './output_clean_env/runs/test1')  # TensorBoard 日志文件
 
 def setup_cuda():
     """设置CUDA优化"""

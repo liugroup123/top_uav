@@ -54,7 +54,7 @@ class UAVEnv(gym.Env):
         self.max_coverage_rate = 0.0
         
         # 物理参数
-        self.max_speed = 2.0
+        self.max_speed = 3.0
         self.communication_range = 0.8
         self.coverage_radius = 0.4
         self.dt = 0.1
