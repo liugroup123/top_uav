@@ -36,6 +36,12 @@ model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模�
 video_dir = os.path.join(current_dir, './output_clean_env/videos/test1')  # 视频保存文件夹
 runs_dir = os.path.join(current_dir, './output_clean_env/runs/test1')  # TensorBoard 日志文件
 
+# 确保相关目录存在
+os.makedirs(model_dir, exist_ok=True)
+os.makedirs(video_dir, exist_ok=True)
+os.makedirs(runs_dir, exist_ok=True)
+
+
 def setup_cuda():
     """设置CUDA优化"""
     if torch.cuda.is_available():
