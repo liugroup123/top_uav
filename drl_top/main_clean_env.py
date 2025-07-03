@@ -273,8 +273,13 @@ def main():
         # 定期保存模型
         if episode % 500 == 0:
             model_save_path = f"{model_dir}/matd3_episode_{episode}.pth"
+            gat_save_path = f"{model_dir}/gat_episode_{episode}.pth"
+
             matd3.save(model_save_path)
-            print(f"💾 模型已保存: {model_save_path}")
+            env.save_gat_model(gat_save_path)  # 保存GAT模型
+
+            print(f"💾 MATD3模型已保存: {model_save_path}")
+            print(f"🧠 GAT模型已保存: {gat_save_path}")
 
         # 打印统计摘要（每100个episode）
         if episode % 100 == 0 and episode > 0:
@@ -289,8 +294,14 @@ def main():
 
     # 保存最终模型
     final_model_path = f"{model_dir}/matd3_final.pth"
+    final_gat_path = f"{model_dir}/gat_final.pth"
+
     matd3.save(final_model_path)
-    print(f"🎉 训练完成！最终模型保存至: {final_model_path}")
+    env.save_gat_model(final_gat_path)
+
+    print(f"🎉 训练完成！")
+    print(f"💾 MATD3模型保存至: {final_model_path}")
+    print(f"🧠 GAT模型保存至: {final_gat_path}")
 
     # 关闭环境和记录器
     env.close()

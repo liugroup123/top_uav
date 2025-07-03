@@ -1113,3 +1113,31 @@ class UAVEnv(gym.Env):
             pygame.quit()
             self.screen = None
             self.clock = None
+
+    def _force_episode_mode(self, mode):
+        """强制设置episode模式 - 用于测试"""
+        if mode == 'normal':
+            self.episode_plan = {
+                'type': 'normal',
+                'trigger_step': None,
+                'executed': False
+            }
+        elif mode == 'loss':
+            # 设置UAV损失模式，在中期触发
+            trigger_step = np.random.randint(100, 300)
+            self.episode_plan = {
+                'type': 'loss',
+                'trigger_step': trigger_step,
+                'executed': False
+            }
+        elif mode == 'addition':
+            # 设置UAV增加模式，在中期触发
+            trigger_step = np.random.randint(100, 300)
+            self.episode_plan = {
+                'type': 'addition',
+                'trigger_step': trigger_step,
+                'executed': False
+            }
+
+        print(f"🔧 强制设置模式: {mode}" +
+              (f" (触发步数: {self.episode_plan['trigger_step']})" if self.episode_plan['trigger_step'] else ""))
