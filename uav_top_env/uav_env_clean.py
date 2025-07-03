@@ -63,12 +63,13 @@ class UAVEnv(gym.Env):
         self.min_active_agents = min_active_agents
         self.max_active_agents = max_active_agents or num_agents
         
-        # 新的奖励权重 (基于动态避障实验调整)
-        self.connectivity_weight = 1.0      # 连通性权重
-        self.coverage_weight = 20.0         # 覆盖权重 (降低)
+        # 新的奖励权重 (优化连通性和覆盖平衡)
+        self.connectivity_weight = 2.0      # 连通性权重 (提高)
+        self.coverage_weight = 15.0         # 覆盖权重 (适当降低)
         self.stability_weight = 0.5         # 稳定性权重
-        self.topology_weight = 5.0          # 拓扑适应权重 (新增)
-        self.boundary_weight = 1.0          # 保留边界权重
+        self.topology_weight = 5.0          # 拓扑适应权重
+        self.boundary_weight = 1.0          # 边界权重
+        self.critical_connection_weight = 0.5  # 关键连接权重 (新增)
         
         # 拓扑实验概率
         self.normal_probability = 0.60
@@ -558,12 +559,14 @@ class UAVEnv(gym.Env):
         coverage_reward = self._compute_coverage_reward_advanced()
         stability_reward = self._compute_stability_reward_advanced()
         topology_reward = self._compute_topology_adaptation_reward()
+        critical_connection_reward = self._compute_critical_connection_reward()  # 新增关键连接奖励
 
         # 2. 全局奖励
         global_reward = (connectivity_reward * self.connectivity_weight +
                         coverage_reward * self.coverage_weight +
                         stability_reward * self.stability_weight +
-                        topology_reward * self.topology_weight)
+                        topology_reward * self.topology_weight +
+                        critical_connection_reward * self.critical_connection_weight)
 
         # 3. 为每个智能体分配奖励
         for i, agent in enumerate(self.agents):
@@ -580,16 +583,15 @@ class UAVEnv(gym.Env):
         return rewards
 
     def _compute_connectivity_reward_advanced(self):
-        """计算连通性奖励 """
+        """基于图论的连通性奖励 - 简化版"""
         # 构建通信图
         G = nx.Graph()
         active_agents = list(self.active_agents)
 
-        # 添加节点
+        # 添加节点和边
         for i in active_agents:
             G.add_node(i)
 
-        # 添加边 (通信连接)
         for i in active_agents:
             for j in active_agents:
                 if i >= j:
@@ -598,22 +600,30 @@ class UAVEnv(gym.Env):
                 if dist <= self.communication_range:
                     G.add_edge(i, j)
 
-        # 计算代数连通度
-        try:
-            if len(active_agents) <= 1:
-                λ2 = 0
-            else:
-                λ2 = nx.algebraic_connectivity(G)
-        except:
-            λ2 = 0  # 如果图不连通，则连通度为0
-
-        # 分级奖励 (移植自原实验)
-        if λ2 == 0:
-            return -3
-        elif λ2 < 0.2:
-            return -0.5
-        else:
+        if len(active_agents) <= 1:
             return 0
+
+        # 1. 基础连通性奖励/惩罚
+        if nx.is_connected(G):
+            connectivity_reward = 3.0  # 连通奖励
+        else:
+            connectivity_reward = -2.0  # 不连通严厉惩罚
+
+        # 2. 图结构质量奖励 (避免过度连接)
+        structure_reward = 0
+        if nx.is_connected(G):
+            n_nodes = len(active_agents)
+            min_edges = n_nodes - 1  # 最小生成树边数
+            actual_edges = G.number_of_edges()
+
+            if actual_edges == min_edges:
+                structure_reward = 2.0  # 最优结构 (树状)
+            elif actual_edges <= min_edges * 1.5:
+                structure_reward = 1.0  # 适度冗余
+            else:
+                structure_reward = -1.0  # 过度连接惩罚
+
+        return connectivity_reward + structure_reward
 
     def _compute_coverage_reward_advanced(self):
         """计算覆盖奖励 """
@@ -688,7 +698,7 @@ class UAVEnv(gym.Env):
         return 0
 
     def _compute_individual_reward(self, agent_idx):
-        """计算个体奖励 """
+        """计算个体奖励 - 专注覆盖，移除距离奖励避免聚集"""
         reward = 0
 
         # 1. 唯一覆盖奖励
@@ -711,19 +721,27 @@ class UAVEnv(gym.Env):
 
         reward += unique_coverage_reward * self.unique_coverage_weight
 
-        # 2. 智能体间距离奖励/惩罚 (适配拓扑环境)
-        detection_radius = self.communication_range * 0.5
-        min_radius = detection_radius
-        max_radius = 2 * detection_radius
+        """
+        移除距离奖励！让连通性由全局奖励处理，避免UAV聚集倾向
+        这样UAV可以自由分散探索，不会为了获得连接奖励而聚集
+        """
+        return reward
 
-        for other_idx in self.active_agents:
-            if other_idx == agent_idx:
-                continue
-            dist = np.linalg.norm(agent_pos - self.agent_pos[other_idx])
-            if dist < 0.75 * min_radius:
-                reward -= 2  # 过近惩罚
-            elif min_radius <= dist <= max_radius:
-                reward += 1.0  # 适当距离奖励
+    def _compute_critical_connection_reward(self):
+        """关键连接奖励 - 奖励维持关键连接的UAV，避免过度依赖"""
+        reward = 0
+        connectivity_matrix = self._compute_connectivity_matrix()
+
+        for i in self.active_agents:
+            critical_neighbors = self._find_critical_neighbors(i, connectivity_matrix)
+
+            # 奖励维持关键连接的UAV
+            if len(critical_neighbors) > 0:
+                reward += len(critical_neighbors) * 1.0  # 每个关键连接+1
+
+            # 惩罚成为单点故障的UAV (避免过度依赖单个UAV)
+            if len(critical_neighbors) > 2:
+                reward -= 0.5  # 避免网络过度依赖单个节点
 
         return reward
 
