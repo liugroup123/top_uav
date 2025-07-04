@@ -55,8 +55,8 @@ class UAVEnv(gym.Env):
         
         # 物理参数
         self.max_speed = 3.0
-        self.communication_range = 0.8
-        self.coverage_radius = 0.4
+        self.communication_range = 1.0
+        self.coverage_radius = 0.5
         self.dt = 0.1
         
         # 拓扑参数
@@ -858,13 +858,14 @@ class UAVEnv(gym.Env):
             self.screen = None
 
     def calculate_coverage_complete(self):
-        """计算完整覆盖率信息 - 与原版本完全一致"""
-        # 计算目标点是否被覆盖
+        """计算完整覆盖率信息 - 修复：只计算活跃UAV的覆盖"""
+        # 计算目标点是否被覆盖 (只考虑活跃UAV)
         covered_flags = []
         for target in self.target_pos:
             covered = False
-            for agent in self.agent_pos:
-                distance = np.linalg.norm(target - agent)
+            for i in self.active_agents:  # 修复：只检查活跃UAV
+                agent_pos = self.agent_pos[i]
+                distance = np.linalg.norm(target - agent_pos)
                 if distance <= self.coverage_radius:
                     covered = True
                     break
@@ -875,28 +876,38 @@ class UAVEnv(gym.Env):
         total_targets = len(self.target_pos)
         coverage_rate = covered_count / total_targets if total_targets > 0 else 0
 
-        # 构建通信邻接矩阵
-        num_agents = self.num_agents
-        adjacency_matrix = np.zeros((num_agents, num_agents), dtype=bool)
-        for i in range(num_agents):
-            for j in range(i + 1, num_agents):
-                distance = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
-                if distance <= self.communication_range:
-                    adjacency_matrix[i, j] = True
-                    adjacency_matrix[j, i] = True
+        # 构建通信邻接矩阵 (只考虑活跃UAV)
+        active_agents = list(self.active_agents)
+        num_active = len(active_agents)
 
-        # DFS 检查连通性
-        visited = [False] * num_agents
+        if num_active <= 1:
+            # 0或1个活跃UAV，连通性定义为True
+            fully_connected = True
+            unconnected_count = 0
+        else:
+            # 构建活跃UAV之间的邻接矩阵
+            adjacency_matrix = np.zeros((num_active, num_active), dtype=bool)
+            for i in range(num_active):
+                for j in range(i + 1, num_active):
+                    agent_i = active_agents[i]
+                    agent_j = active_agents[j]
+                    distance = np.linalg.norm(self.agent_pos[agent_i] - self.agent_pos[agent_j])
+                    if distance <= self.communication_range:
+                        adjacency_matrix[i, j] = True
+                        adjacency_matrix[j, i] = True
 
-        def dfs(idx):
-            visited[idx] = True
-            for neighbor_idx, connected in enumerate(adjacency_matrix[idx]):
-                if connected and not visited[neighbor_idx]:
-                    dfs(neighbor_idx)
+            # DFS 检查连通性 (从第一个活跃UAV开始)
+            visited = [False] * num_active
 
-        dfs(0)
-        fully_connected = all(visited)
-        unconnected_count = visited.count(False)
+            def dfs(idx):
+                visited[idx] = True
+                for neighbor_idx, connected in enumerate(adjacency_matrix[idx]):
+                    if connected and not visited[neighbor_idx]:
+                        dfs(neighbor_idx)
+
+            dfs(0)  # 从第一个活跃UAV开始
+            fully_connected = all(visited)
+            unconnected_count = visited.count(False)
 
         # 更新最大覆盖率
         if fully_connected:
