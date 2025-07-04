@@ -442,8 +442,8 @@ class UAVEnv(gym.Env):
 
     def _compute_connectivity_based_speed_limits(self):
         """
-        基于连接性计算每个UAV的动态速度限制
-        实现论文引理1的连接性保持约束
+        简化的连接性速度限制 - 优化强化学习训练
+        只在关键情况下进行温和限制
         """
         speed_limits = np.full(self.num_agents, self.max_base_speed, dtype=np.float32)
 
@@ -455,34 +455,22 @@ class UAVEnv(gym.Env):
                 speed_limits[i] = 0.0
                 continue
 
-            # 找到关键邻居集合 N_i^c (critical neighbors)
+            # 找到关键邻居集合
             critical_neighbors = self._find_critical_neighbors(i, connectivity_matrix)
 
+            # 简化的速度限制策略
             if len(critical_neighbors) == 0:
-                # 没有关键邻居，使用基础速度限制
+                # 没有关键邻居，无速度限制
                 speed_limits[i] = self.max_base_speed
+            elif len(critical_neighbors) == 1:
+                # 只有1个关键邻居，轻微限制
+                speed_limits[i] = self.max_base_speed * 0.9  # 90%速度
+            elif len(critical_neighbors) == 2:
+                # 2个关键邻居，中等限制
+                speed_limits[i] = self.max_base_speed * 0.8  # 80%速度
             else:
-                # 计算基于邻居距离的速度约束
-                min_constraint = float('inf')
-
-                for j in critical_neighbors:
-                    if j in self.active_agents:
-                        # 计算到邻居j的距离
-                        dist_ij = np.linalg.norm(self.agent_pos[i] - self.agent_pos[j])
-
-                        # 基于引理1的约束计算
-                        # ε_i = min(r_c - d_ij) ≤ ε
-                        epsilon_i = min(self.communication_range - dist_ij, self.epsilon)
-
-                        if epsilon_i > 0:
-                            # Δd_i ≤ ε_i/2 (当N_i^c ≠ ∅时)
-                            constraint = epsilon_i / 2.0
-                            min_constraint = min(min_constraint, constraint)
-
-                if min_constraint != float('inf'):
-                    speed_limits[i] = max(min_constraint, self.min_speed_limit)
-                else:
-                    speed_limits[i] = self.max_base_speed
+                # 3个或更多关键邻居，较强限制（避免成为关键节点）
+                speed_limits[i] = self.max_base_speed * 0.6  # 60%速度
 
         return speed_limits
 
