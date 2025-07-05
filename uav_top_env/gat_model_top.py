@@ -11,28 +11,54 @@ class UAVAttentionNetwork(nn.Module):
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.training = True  # 添加训练标志
         
-        # 优化2：一次性将整个模型移到GPU
+        # 双GAT架构：UAV-UAV GAT + UAV-Target GAT
         self.model = nn.ModuleDict({
+            # UAV-UAV GAT网络
             'uav_gat1': GATConv(
-                uav_features, 
-                hidden_size, 
-                heads=heads, 
-                dropout=dropout, 
+                uav_features,
+                hidden_size,
+                heads=heads,
+                dropout=dropout,
                 add_self_loops=True,
-                concat=True  # 连接多头注意力的输出
+                concat=True
             ),
             'uav_gat2': GATConv(
-                hidden_size * heads, 
-                hidden_size, 
-                heads=1, 
-                dropout=dropout, 
+                hidden_size * heads,
+                hidden_size,
+                heads=1,
+                dropout=dropout,
                 add_self_loops=True,
-                concat=False  # 最后一层不连接多头输出
+                concat=False
             ),
-            'bn1': nn.BatchNorm1d(hidden_size * heads),
-            'bn2': nn.BatchNorm1d(hidden_size),
-            'target_transform': nn.Linear(target_features, hidden_size),
-            'target_bn': nn.BatchNorm1d(hidden_size),
+
+            # UAV-Target GAT网络 (新增)
+            'uav_target_gat1': GATConv(
+                uav_features,  # UAV特征作为查询
+                hidden_size,
+                heads=heads,
+                dropout=dropout,
+                add_self_loops=False,  # UAV-Target不需要自循环
+                concat=True
+            ),
+            'uav_target_gat2': GATConv(
+                hidden_size * heads,
+                hidden_size,
+                heads=1,
+                dropout=dropout,
+                add_self_loops=False,
+                concat=False
+            ),
+
+            # 批归一化层
+            'uav_bn1': nn.BatchNorm1d(hidden_size * heads),
+            'uav_bn2': nn.BatchNorm1d(hidden_size),
+            'target_bn1': nn.BatchNorm1d(hidden_size * heads),
+            'target_bn2': nn.BatchNorm1d(hidden_size),
+
+            # 目标特征预处理
+            'target_transform': nn.Linear(target_features, uav_features),  # 将目标特征转换为UAV特征维度
+
+            # 特征融合层
             'fusion_layer': nn.Sequential(
                 nn.Linear(hidden_size * 2, hidden_size),
                 nn.ReLU(),
@@ -61,48 +87,77 @@ class UAVAttentionNetwork(nn.Module):
         if active_agents is None:
             active_agents = list(range(len(uav_features)))
         
-        # 优化5：批量处理
+        # 1. UAV-UAV GAT处理
         uav_edge_index = adj_matrix_to_edge_index(uav_adj)
-        
-        # GAT处理
-        x = self.model['uav_gat1'](uav_features, uav_edge_index)
-        if x.size(0) > 1:  # 优化6：使用size(0)替代len()
-            x = self.model['bn1'](x)
-        x = F.elu(x)
-        x = F.dropout(x, p=0.6, training=self.training)
-        
-        x = self.model['uav_gat2'](x, uav_edge_index)
-        if x.size(0) > 1:
-            x = self.model['bn2'](x)
-        uav_h = F.elu(x)
-        
-        # 优化7：并行处理目标特征
-        target_h = self.model['target_transform'](target_features)
-        if target_h.size(0) > 1:
-            target_h = self.model['target_bn'](target_h)
-        target_h = F.relu(target_h)
-        
-        # 优化8：使用向量化操作替代循环
-        target_features_list = []
-        mask = torch.zeros(len(uav_features), device=self.device)
-        mask[active_agents] = 1
-        
-        for i in range(len(uav_features)):
-            if mask[i]:
-                visible_mask = target_adj[i] > 0
-                if visible_mask.any():
-                    target_feat = target_h[visible_mask].mean(dim=0)
-                else:
-                    target_feat = torch.zeros(uav_h.size(-1), device=self.device)
-            else:
-                target_feat = torch.zeros(uav_h.size(-1), device=self.device)
-            target_features_list.append(target_feat)
-        
-        target_features = torch.stack(target_features_list)
-        
-        # 特征融合
-        combined = torch.cat([uav_h, target_features], dim=-1)
+
+        # UAV-UAV GAT第一层
+        uav_x = self.model['uav_gat1'](uav_features, uav_edge_index)
+        if uav_x.size(0) > 1:
+            uav_x = self.model['uav_bn1'](uav_x)
+        uav_x = F.elu(uav_x)
+        uav_x = F.dropout(uav_x, p=0.6, training=self.training)
+
+        # UAV-UAV GAT第二层
+        uav_x = self.model['uav_gat2'](uav_x, uav_edge_index)
+        if uav_x.size(0) > 1:
+            uav_x = self.model['uav_bn2'](uav_x)
+        uav_h = F.elu(uav_x)
+
+        # 2. UAV-Target GAT处理
+        # 预处理目标特征，使其与UAV特征维度一致
+        target_features_processed = self.model['target_transform'](target_features)
+
+        # 创建UAV-Target二分图的边索引
+        uav_target_edge_index = self._create_bipartite_edge_index(target_adj, active_agents)
+
+        # 合并UAV和目标特征用于二分图GAT
+        combined_features = torch.cat([uav_features, target_features_processed], dim=0)
+
+        # UAV-Target GAT第一层
+        target_x = self.model['uav_target_gat1'](combined_features, uav_target_edge_index)
+        if target_x.size(0) > 1:
+            target_x = self.model['target_bn1'](target_x)
+        target_x = F.elu(target_x)
+        target_x = F.dropout(target_x, p=0.6, training=self.training)
+
+        # UAV-Target GAT第二层
+        target_x = self.model['uav_target_gat2'](target_x, uav_target_edge_index)
+        if target_x.size(0) > 1:
+            target_x = self.model['target_bn2'](target_x)
+        target_h = F.elu(target_x)
+
+        # 只取UAV部分的特征（前n_uavs个节点）
+        n_uavs = len(uav_features)
+        uav_target_features = target_h[:n_uavs]
+
+        # 3. 特征融合
+        combined = torch.cat([uav_h, uav_target_features], dim=-1)
         return self.model['fusion_layer'](combined)
+
+    def _create_bipartite_edge_index(self, target_adj, active_agents):
+        """创建UAV-Target二分图的边索引"""
+        n_uavs = target_adj.size(0)
+        n_targets = target_adj.size(1)
+
+        edges = []
+        # UAV到Target的边
+        for i in active_agents:
+            for j in range(n_targets):
+                if target_adj[i, j] > 0:
+                    edges.append([i, n_uavs + j])  # 目标节点索引偏移n_uavs
+
+        # Target到UAV的边（双向）
+        for i in active_agents:
+            for j in range(n_targets):
+                if target_adj[i, j] > 0:
+                    edges.append([n_uavs + j, i])
+
+        if len(edges) == 0:
+            # 如果没有边，创建空的边索引
+            return torch.zeros((2, 0), dtype=torch.long, device=target_adj.device)
+
+        edge_index = torch.tensor(edges, device=target_adj.device).t().contiguous()
+        return edge_index
 
 def adj_matrix_to_edge_index(adj_matrix):
     """

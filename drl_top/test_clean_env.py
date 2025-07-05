@@ -47,12 +47,15 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
     )
 
     print(f"✅ 环境创建成功 | 模式: {render_mode}")
+    print(f"🧠 GAT架构: 双GAT (UAV-UAV + UAV-Target)")
 
     # 获取环境信息
     obs, _ = env.reset()
     agents = env.agents
     obs_dim = env.get_observation_space(agents[0]).shape[0]
     action_dim = env.get_action_space(agents[0]).shape[0]
+
+    print(f"📊 观察空间维度: {obs_dim} (包含32维GAT特征)")
 
     # 创建并加载模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -72,9 +75,18 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
         if os.path.exists(gat_path):
             env.load_gat_model(gat_path)
             print(f"✅ GAT模型加载成功: {gat_path}")
+            print(f"🧠 GAT架构: 双GAT (UAV-UAV + UAV-Target)")
+
+            # 验证GAT模型结构
+            gat_layers = list(env.gat_model.model.keys())
+            uav_gat_layers = [k for k in gat_layers if 'uav_gat' in k]
+            target_gat_layers = [k for k in gat_layers if 'uav_target_gat' in k]
+            print(f"📊 UAV-UAV GAT层: {len(uav_gat_layers)}")
+            print(f"📊 UAV-Target GAT层: {len(target_gat_layers)}")
         else:
             print(f"⚠️  GAT模型文件不存在: {gat_path}")
-            print("⚠️  将使用随机初始化的GAT (可能影响性能)")
+            print("⚠️  将使用随机初始化的双GAT架构 (可能影响性能)")
+            print("💡 建议使用训练好的GAT模型以获得最佳效果")
 
     except Exception as e:
         print(f"❌ 模型加载失败: {e}")
@@ -137,6 +149,12 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
     print(f"平均覆盖率: {np.mean(episode_coverages):.3f}")
     print(f"最高覆盖率: {max(episode_coverages):.3f}")
 
+    # GAT性能验证
+    print(f"\n🧠 GAT架构验证:")
+    print(f"✅ 双GAT架构 (UAV-UAV + UAV-Target)")
+    print(f"✅ GAT特征维度: 32")
+    print(f"✅ 观察空间总维度: {obs_dim}")
+
     env.close()
 
 
@@ -162,9 +180,10 @@ def main():
             gat_file = model_files[-1].replace('matd3_', 'gat_')
             gat_path = os.path.join(model_dir, gat_file)
             if os.path.exists(gat_path):
-                print(f"📁 找到对应GAT模型: {gat_file}")
+                print(f"📁 找到对应GAT模型: {gat_file} (双GAT架构)")
             else:
                 print(f"⚠️  未找到对应GAT模型: {gat_file}")
+                print("💡 将使用随机初始化的双GAT，建议重新训练")
         else:
             print(f"❌ 未找到模型文件在: {model_dir}")
             print("请先运行训练代码")

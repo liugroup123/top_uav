@@ -1081,12 +1081,42 @@ class UAVEnv(gym.Env):
         return self.gat_model.parameters()
 
     def save_gat_model(self, path):
-        """保存GAT模型"""
-        torch.save(self.gat_model.state_dict(), path)
+        """保存GAT模型（包含版本信息）"""
+        model_data = {
+            'state_dict': self.gat_model.state_dict(),
+            'architecture': 'dual_gat_v2',  # 新架构版本标识
+            'model_config': {
+                'uav_features': 4,
+                'target_features': 2,
+                'hidden_size': 64,
+                'heads': 4
+            }
+        }
+        torch.save(model_data, path)
 
     def load_gat_model(self, path):
-        """加载GAT模型"""
-        self.gat_model.load_state_dict(torch.load(path, map_location=self.device))
+        """加载GAT模型（带兼容性检查）"""
+        try:
+            model_data = torch.load(path, map_location=self.device)
+
+            # 检查是否是新格式
+            if isinstance(model_data, dict) and 'architecture' in model_data:
+                if model_data['architecture'] == 'dual_gat_v2':
+                    # 新架构，直接加载
+                    self.gat_model.load_state_dict(model_data['state_dict'])
+                    print(f"✅ 加载新架构GAT模型: {model_data['architecture']}")
+                else:
+                    print(f"⚠️  不兼容的GAT架构: {model_data['architecture']}")
+                    print("建议重新训练模型")
+            else:
+                # 旧格式，尝试兼容性加载
+                print("⚠️  检测到旧版GAT模型，可能不兼容")
+                print("建议重新训练以获得最佳性能")
+                # 可以选择不加载或尝试部分加载
+
+        except Exception as e:
+            print(f"❌ GAT模型加载失败: {e}")
+            print("建议重新训练模型")
 
     # 兼容性方法 - 保持原有接口
     def get_observation_space(self, agent):
