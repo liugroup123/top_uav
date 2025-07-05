@@ -11,7 +11,7 @@ from gym import spaces
 import cv2
 import networkx as nx
 
-# 动态导入GAT模型
+# 动态导入GAT模型和观察attention
 import importlib.util
 import os
 
@@ -27,6 +27,19 @@ def _import_gat_model():
     return gat_module.UAVAttentionNetwork, gat_module.create_adjacency_matrices
 
 UAVAttentionNetwork, create_adjacency_matrices = _import_gat_model()
+
+def _import_obs_attention():
+    """动态导入观察attention模型"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    obs_attention_path = os.path.join(current_dir, 'uav_obs_attention.py')
+
+    spec = importlib.util.spec_from_file_location("uav_obs_attention", obs_attention_path)
+    obs_attention_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(obs_attention_module)
+
+    return obs_attention_module.UAVObservationAttention, obs_attention_module.create_communication_mask
+
+UAVObservationAttention, create_communication_mask = _import_obs_attention()
 
 # 简化版本不需要复杂的配置导入
 
@@ -124,9 +137,22 @@ class UAVEnv(gym.Env):
 
         # 设置GAT模型为训练模式
         self.gat_model.train()
-        
+
+        # 初始化观察attention网络
+        self.obs_attention_net = UAVObservationAttention(
+            obs_dim=67,  # 观察空间维度
+            hidden_dim=64,
+            num_heads=4,
+            num_hops=2,
+            dropout=0.1,
+            device=self.device
+        )
+
+        # 设置观察attention为训练模式
+        self.obs_attention_net.train()
+
         # 训练模式标志
-        self.training = True  # 设置为True，让GAT参与训练
+        self.training = True  # 设置为True，让GAT和观察attention参与训练
         
         # 观察和动作空间（保持原有格式）
         self._setup_spaces()
@@ -342,10 +368,20 @@ class UAVEnv(gym.Env):
         return True
 
     def _get_obs(self):
-        """获取观察 - 优化版本，减少重复计算"""
-        # 计算GAT特征（使用缓存）
+        """获取观察 - 集成观察attention的版本"""
+        # 1. 计算GAT特征（使用缓存）
         gat_features = self._compute_gat_features()
 
+        # 2. 生成原始观察
+        raw_observations = self._compute_raw_observations(gat_features)
+
+        # 3. 应用观察attention增强
+        enhanced_observations = self._apply_observation_attention(raw_observations)
+
+        return enhanced_observations
+
+    def _compute_raw_observations(self, gat_features):
+        """计算原始观察（不含attention增强）"""
         # 预计算公共数据，避免重复计算
         active_agents_ratio = len(self.active_agents) / self.num_agents
         time_progress = self.curr_step / self.max_steps
@@ -383,8 +419,8 @@ class UAVEnv(gym.Env):
             else:
                 gat_features_np.append(np.zeros(32, dtype=np.float32))
 
-        # 组装观察
-        obs_list = []
+        # 组装原始观察
+        obs_array = np.zeros((self.num_agents, 67), dtype=np.float32)
         for i in range(self.num_agents):
             obs_parts = np.concatenate([
                 self.agent_pos[i],                    # 位置
@@ -396,8 +432,40 @@ class UAVEnv(gym.Env):
                  float(i in self.active_agents),      # 自身状态
                  time_progress]                       # 时间进度
             ]).astype(np.float32)
+            obs_array[i] = obs_parts
 
-            obs_list.append(obs_parts)
+        return obs_array
+
+    def _apply_observation_attention(self, raw_observations):
+        """应用观察attention增强"""
+        # 转换为torch tensor
+        obs_tensor = torch.FloatTensor(raw_observations).to(self.device)
+
+        # 创建通信掩码
+        agent_positions = torch.FloatTensor(self.agent_pos).to(self.device)
+        comm_mask = create_communication_mask(
+            agent_positions,
+            self.active_agents,
+            self.communication_range,
+            self.device
+        )
+
+        # 应用观察attention
+        with torch.set_grad_enabled(self.training):
+            enhanced_obs, attention_weights = self.obs_attention_net(
+                obs_tensor,
+                comm_mask,
+                self.active_agents
+            )
+
+        # 转换回numpy并组装为列表格式
+        if not self.training:
+            enhanced_obs = enhanced_obs.detach()
+
+        enhanced_obs_np = enhanced_obs.cpu().numpy()
+
+        # 转换为原始格式（列表）
+        obs_list = [enhanced_obs_np[i] for i in range(self.num_agents)]
 
         return obs_list
 
@@ -1075,21 +1143,34 @@ class UAVEnv(gym.Env):
 
 
 
-    # GAT相关方法 - 保持原有接口
+    # GAT和观察attention相关方法 - 保持原有接口
     def get_gat_parameters(self):
         """获取GAT参数"""
         return self.gat_model.parameters()
 
+    def get_obs_attention_parameters(self):
+        """获取观察attention参数"""
+        return self.obs_attention_net.parameters()
+
+    def get_all_trainable_parameters(self):
+        """获取所有可训练参数（GAT + 观察attention）"""
+        import itertools
+        return itertools.chain(self.gat_model.parameters(), self.obs_attention_net.parameters())
+
     def save_gat_model(self, path):
         """保存GAT模型（包含版本信息）"""
         model_data = {
-            'state_dict': self.gat_model.state_dict(),
-            'architecture': 'dual_gat_v2',  # 新架构版本标识
+            'gat_state_dict': self.gat_model.state_dict(),
+            'obs_attention_state_dict': self.obs_attention_net.state_dict(),
+            'architecture': 'dual_gat_v3_with_obs_attention',  # 新架构版本标识
             'model_config': {
                 'uav_features': 4,
                 'target_features': 2,
                 'hidden_size': 64,
-                'heads': 4
+                'heads': 4,
+                'obs_dim': 67,
+                'obs_attention_heads': 4,
+                'obs_attention_hops': 2
             }
         }
         torch.save(model_data, path)
@@ -1101,18 +1182,26 @@ class UAVEnv(gym.Env):
 
             # 检查是否是新格式
             if isinstance(model_data, dict) and 'architecture' in model_data:
-                if model_data['architecture'] == 'dual_gat_v2':
-                    # 新架构，直接加载
+                if model_data['architecture'] == 'dual_gat_v3_with_obs_attention':
+                    # 最新架构，加载GAT和观察attention
+                    self.gat_model.load_state_dict(model_data['gat_state_dict'])
+                    self.obs_attention_net.load_state_dict(model_data['obs_attention_state_dict'])
+                    print(f"✅ 加载完整模型: {model_data['architecture']}")
+                    print("✅ GAT模型和观察Attention模型均已加载")
+                elif model_data['architecture'] == 'dual_gat_v2':
+                    # 只有GAT，没有观察attention
                     self.gat_model.load_state_dict(model_data['state_dict'])
-                    print(f"✅ 加载新架构GAT模型: {model_data['architecture']}")
+                    print(f"⚠️  加载旧版GAT模型: {model_data['architecture']}")
+                    print("⚠️  观察Attention将使用随机初始化")
+                    print("💡 建议重新训练以获得完整功能")
                 else:
                     print(f"⚠️  不兼容的GAT架构: {model_data['architecture']}")
                     print("建议重新训练模型")
             else:
                 # 旧格式，尝试兼容性加载
                 print("⚠️  检测到旧版GAT模型，可能不兼容")
+                print("⚠️  观察Attention将使用随机初始化")
                 print("建议重新训练以获得最佳性能")
-                # 可以选择不加载或尝试部分加载
 
         except Exception as e:
             print(f"❌ GAT模型加载失败: {e}")

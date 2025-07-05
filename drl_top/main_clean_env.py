@@ -94,7 +94,9 @@ def main():
     print(f"UAV数量: {env.num_agents}")
     print(f"目标数量: {env.num_targets}")
     print(f"🧠 GAT架构: 双GAT (UAV-UAV + UAV-Target)")
+    print(f"🔗 观察Attention: {env.obs_attention_net.num_hops}跳, {env.obs_attention_net.num_heads}头")
     print(f"📊 GAT特征维度: {env.gat_model.model['fusion_layer'][-1].out_features}")
+    print(f"📊 观察空间维度: 67 (含32维GAT + Attention增强)")
     
     # 获取环境信息
     obs, _ = env.reset()
@@ -287,7 +289,9 @@ def main():
             env.save_gat_model(gat_save_path)  # 保存GAT模型
 
             print(f"💾 MATD3模型已保存: {model_save_path}")
-            print(f"🧠 GAT模型已保存: {gat_save_path} (双GAT架构)")
+            print(f"🧠 GAT+观察Attention模型已保存: {gat_save_path}")
+            print(f"   ├─ 双GAT架构 (UAV-UAV + UAV-Target)")
+            print(f"   └─ 观察Attention ({env.obs_attention_net.num_hops}跳)")
 
         # 打印统计摘要（每100个episode）
         if episode % 100 == 0 and episode > 0:
