@@ -5,7 +5,7 @@ from torch_geometric.nn import GATConv
 from torch_geometric.data import Data
 
 class UAVAttentionNetwork(nn.Module):
-    def __init__(self, uav_features, target_features, hidden_size=64, heads=4, dropout=0.6, device=None):
+    def __init__(self, uav_features, target_features, hidden_size=64, heads=4, dropout=0.6, output_dim=32, device=None):
         super(UAVAttentionNetwork, self).__init__()
         
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -58,12 +58,12 @@ class UAVAttentionNetwork(nn.Module):
             # 目标特征预处理
             'target_transform': nn.Linear(target_features, uav_features),  # 将目标特征转换为UAV特征维度
 
-            # 特征融合层
+            # 特征融合层 (使用动态输出维度)
             'fusion_layer': nn.Sequential(
                 nn.Linear(hidden_size * 2, hidden_size),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_size, hidden_size//2)
+                nn.Linear(hidden_size, output_dim)
             )
         }).to(self.device)
 

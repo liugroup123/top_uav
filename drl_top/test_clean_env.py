@@ -48,7 +48,12 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
 
     print(f"✅ 环境创建成功 | 模式: {render_mode}")
     print(f"🧠 GAT架构: 双GAT (UAV-UAV + UAV-Target)")
-    print(f"🔗 观察Attention: {env.obs_attention_net.num_hops}跳, {env.obs_attention_net.num_heads}头")
+    print(f"📊 GAT配置: {env.gat_hidden_size}隐藏层, {env.gat_heads}头, 输出{env.gat_output_dim}维")
+
+    if env.use_obs_attention:
+        print(f"🔗 观察Attention: 启用 ({env.obs_attention_hops}跳, {env.obs_attention_heads}头)")
+    else:
+        print(f"🔗 观察Attention: 禁用")
 
     # 获取环境信息
     obs, _ = env.reset()
@@ -56,7 +61,7 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
     obs_dim = env.get_observation_space(agents[0]).shape[0]
     action_dim = env.get_action_space(agents[0]).shape[0]
 
-    print(f"📊 观察空间维度: {obs_dim} (含32维GAT + Attention增强)")
+    print(f"📊 观察空间维度: {obs_dim} (含{env.gat_output_dim}维GAT特征)")
 
     # 创建并加载模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -83,11 +88,15 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
             target_gat_layers = [k for k in gat_layers if 'uav_target_gat' in k]
             print(f"📊 UAV-UAV GAT层: {len(uav_gat_layers)}")
             print(f"📊 UAV-Target GAT层: {len(target_gat_layers)}")
+            print(f"📊 GAT输出维度: {env.gat_output_dim}")
 
             # 验证观察Attention结构
-            obs_attention_layers = list(env.obs_attention_net.attention_layers)
-            print(f"📊 观察Attention层: {len(obs_attention_layers)}")
-            print(f"📊 Attention跳数: {env.obs_attention_net.num_hops}")
+            if env.use_obs_attention and env.obs_attention_net is not None:
+                obs_attention_layers = list(env.obs_attention_net.attention_layers)
+                print(f"📊 观察Attention层: {len(obs_attention_layers)}")
+                print(f"📊 Attention跳数: {env.obs_attention_net.num_hops}")
+            else:
+                print(f"📊 观察Attention: 未启用")
         else:
             print(f"⚠️  GAT模型文件不存在: {gat_path}")
             print("⚠️  将使用随机初始化的双GAT+观察Attention (可能影响性能)")
@@ -157,10 +166,16 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
     # GAT性能验证
     print(f"\n🧠 完整架构验证:")
     print(f"✅ 双GAT架构 (UAV-UAV + UAV-Target)")
-    print(f"✅ 观察Attention ({env.obs_attention_net.num_hops}跳, {env.obs_attention_net.num_heads}头)")
-    print(f"✅ GAT特征维度: 32")
+    print(f"✅ GAT特征维度: {env.gat_output_dim}")
+
+    if env.use_obs_attention:
+        print(f"✅ 观察Attention ({env.obs_attention_hops}跳, {env.obs_attention_heads}头)")
+        print(f"✅ 完整信息处理流程: 基础观察 → GAT → 观察Attention → RL算法")
+    else:
+        print(f"✅ 观察Attention: 禁用")
+        print(f"✅ 信息处理流程: 基础观察 → GAT → RL算法")
+
     print(f"✅ 观察空间总维度: {obs_dim}")
-    print(f"✅ 完整信息处理流程: 基础观察 → GAT → 观察Attention → RL算法")
 
     env.close()
 

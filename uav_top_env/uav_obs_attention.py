@@ -17,13 +17,16 @@ class UAVObservationAttention(nn.Module):
     在每个UAV的观察特征基础上，通过attention机制实现UAV间信息交换
     """
     
-    def __init__(self, obs_dim=67, hidden_dim=64, num_heads=4, num_hops=2, dropout=0.1, device='cuda'):
+    def __init__(self, obs_dim=67, hidden_dim=64, num_heads=4, num_hops=2, dropout=0.1,
+                 sparse_attention=True, max_neighbors=3, device='cuda'):
         super(UAVObservationAttention, self).__init__()
         
         self.obs_dim = obs_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.num_hops = num_hops
+        self.sparse_attention = sparse_attention
+        self.max_neighbors = max_neighbors
         self.device = device
         
         # 观察特征编码器
@@ -102,12 +105,16 @@ class UAVObservationAttention(nn.Module):
         
         # 创建attention mask (True表示被mask，即不能attend)
         attention_mask = ~communication_mask  # [num_uavs, num_uavs]
-        
+
         # 对非活跃UAV进行mask
         for i in range(num_uavs):
             if i not in active_agents:
                 attention_mask[i, :] = True  # 非活跃UAV不能接收信息
                 attention_mask[:, i] = True  # 非活跃UAV不能发送信息
+
+        # 稀疏attention优化：限制每个UAV的最大邻居数
+        if self.sparse_attention:
+            attention_mask = self._create_sparse_mask(attention_mask, communication_mask, active_agents)
         
         current_obs = encoded_obs
         attention_weights_list = []
@@ -190,6 +197,36 @@ class UAVObservationAttention(nn.Module):
         
         return np.mean(entropies) if entropies else 0.0
 
+    def _create_sparse_mask(self, attention_mask, communication_mask, active_agents):
+        """
+        创建稀疏attention掩码，限制每个UAV的最大邻居数
+
+        Args:
+            attention_mask: [num_uavs, num_uavs] 原始attention掩码
+            communication_mask: [num_uavs, num_uavs] 通信掩码
+            active_agents: list 活跃UAV列表
+
+        Returns:
+            torch.Tensor: 稀疏化的attention掩码
+        """
+        sparse_mask = attention_mask.clone()
+
+        for i in active_agents:
+            # 找到UAV i可以通信的邻居
+            neighbors = []
+            for j in active_agents:
+                if i != j and communication_mask[i, j]:
+                    neighbors.append(j)
+
+            # 如果邻居数超过最大限制，只保留最近的几个
+            if len(neighbors) > self.max_neighbors:
+                # 这里简化处理，实际可以根据距离排序
+                # mask掉多余的邻居
+                for j in neighbors[self.max_neighbors:]:
+                    sparse_mask[i, j] = True
+
+        return sparse_mask
+
 
 def create_communication_mask(agent_positions, active_agents, communication_range, device='cuda'):
     """
@@ -231,7 +268,7 @@ def test_uav_obs_attention():
     attention_net = UAVObservationAttention(
         obs_dim=obs_dim,
         hidden_dim=64,
-        num_heads=4,
+        num_heads=2,
         num_hops=2,
         device=device
     )
