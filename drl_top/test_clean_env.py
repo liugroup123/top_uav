@@ -25,7 +25,7 @@ UAVEnv = uav_env_module.UAVEnv
 from matd3_no_gat import MATD3
 
 # 模型路径
-model_dir = os.path.join(current_dir, './output_clean_env/models/test1')
+model_dir = os.path.join(current_dir, './output_clean_env/models/test2')
 
 def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='mixed'):
     """
@@ -101,6 +101,13 @@ def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='
             print(f"⚠️  GAT模型文件不存在: {gat_path}")
             print("⚠️  将使用随机初始化的双GAT+观察Attention (可能影响性能)")
             print("💡 建议使用训练好的完整模型以获得最佳效果")
+
+        # 设置模型为评估模式
+        env.gat_model.eval()
+        if env.use_obs_attention and env.obs_attention_net is not None:
+            env.obs_attention_net.eval()
+        env.training = False  # 设置环境为评估模式
+        print("✅ 模型已设置为评估模式")
 
     except Exception as e:
         print(f"❌ 模型加载失败: {e}")
@@ -186,12 +193,12 @@ def main():
     print("🧪 测试训练好的模型")
 
     # 模型路径 (可以修改为具体的模型文件)
-    model_path = f"{model_dir}/matd3_final.pth"
+    model_path = f"{model_dir}/matd3_final_7_6.pth"
 
     # 如果没有final模型，尝试最新的模型
     if not os.path.exists(model_path):
         # 查找最新的MATD3模型文件
-        model_files = [f for f in os.listdir(model_dir) if f.startswith('matd3_episode_') and f.endswith('.pth')]
+        model_files = [f for f in os.listdir(model_dir) if f.startswith('matd3_') and f.endswith('.pth')]
         if model_files:
             # 按episode数排序，取最新的
             model_files.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))

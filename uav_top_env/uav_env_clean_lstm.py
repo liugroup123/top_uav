@@ -208,7 +208,13 @@ class UAVEnv(gym.Env):
         # 设置GAT模型为训练模式
         self.gat_model.train()
 
-        # 初始化观察attention网络 (可选)
+        # 训练模式标志
+        self.training = True  # 设置为True，让GAT和观察attention参与训练
+
+        # 先设置观察和动作空间（计算obs_dim）
+        self._setup_spaces()
+
+        # 初始化观察attention网络 (可选) - 在obs_dim计算之后
         if self.use_obs_attention:
             self.obs_attention_net = UAVObservationAttention(
                 obs_dim=self.obs_dim,  # 动态观察空间维度
@@ -225,12 +231,6 @@ class UAVEnv(gym.Env):
         else:
             self.obs_attention_net = None
 
-        # 训练模式标志
-        self.training = True  # 设置为True，让GAT和观察attention参与训练
-        
-        # 观察和动作空间（保持原有格式）
-        self._setup_spaces()
-        
         # 渲染相关 - 提高分辨率以改善视频画质
         self.screen = None
         self.clock = None
@@ -542,10 +542,8 @@ class UAVEnv(gym.Env):
             )
 
         # 转换回numpy并组装为列表格式
-        if not self.training:
-            enhanced_obs = enhanced_obs.detach()
-
-        enhanced_obs_np = enhanced_obs.cpu().numpy()
+        # 确保在转换为numpy之前detach张量（无论训练模式如何）
+        enhanced_obs_np = enhanced_obs.detach().cpu().numpy()
 
         # 转换为原始格式（列表）
         obs_list = [enhanced_obs_np[i] for i in range(self.num_agents)]

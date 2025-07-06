@@ -6,8 +6,8 @@ import os
 from gym.utils import seeding
 import torch
 from torch_geometric.data import Data
-from gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
-from config import ExperimentConfig, create_config, config_manager
+from .gat_model_top import UAVAttentionNetwork, create_adjacency_matrices
+from .config import ExperimentConfig, create_config, config_manager
 
 class UAVEnv(gym.Env):
     def __init__(

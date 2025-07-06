@@ -172,7 +172,13 @@ class UAVEnv(gym.Env):
         # 设置GAT模型为训练模式
         self.gat_model.train()
 
-        # 初始化观察attention网络 (可选)
+        # 训练模式标志
+        self.training = True  # 设置为True，让GAT和观察attention参与训练
+
+        # 先设置观察和动作空间（计算obs_dim）
+        self._setup_spaces()
+
+        # 初始化观察attention网络 (可选) - 在obs_dim计算之后
         if self.use_obs_attention:
             self.obs_attention_net = UAVObservationAttention(
                 obs_dim=self.obs_dim,  # 动态观察空间维度
@@ -188,12 +194,6 @@ class UAVEnv(gym.Env):
             self.obs_attention_net.train()
         else:
             self.obs_attention_net = None
-
-        # 训练模式标志
-        self.training = True  # 设置为True，让GAT和观察attention参与训练
-        
-        # 观察和动作空间（保持原有格式）
-        self._setup_spaces()
         
         # 渲染相关 - 提高分辨率以改善视频画质
         self.screen = None
@@ -333,6 +333,12 @@ class UAVEnv(gym.Env):
         for i, agent in enumerate(self.agents):
             if i in self.active_agents and agent in actions:
                 action = np.array(actions[agent], dtype=np.float32)
+
+                # 检查动作是否包含NaN
+                if np.any(np.isnan(action)):
+                    print(f"⚠️  检测到NaN动作 - Agent {agent}: {action}")
+                    action = np.zeros(2, dtype=np.float32)  # 使用零动作
+
                 action = np.clip(action, -1.0, 1.0)
 
                 # 更新智能体速度和位置
@@ -502,10 +508,8 @@ class UAVEnv(gym.Env):
             )
 
         # 转换回numpy并组装为列表格式
-        if not self.training:
-            enhanced_obs = enhanced_obs.detach()
-
-        enhanced_obs_np = enhanced_obs.cpu().numpy()
+        # 确保在转换为numpy之前detach张量（无论训练模式如何）
+        enhanced_obs_np = enhanced_obs.detach().cpu().numpy()
 
         # 转换为原始格式（列表）
         obs_list = [enhanced_obs_np[i] for i in range(self.num_agents)]
@@ -544,6 +548,14 @@ class UAVEnv(gym.Env):
 
         if not self.training:
             gat_features = gat_features.detach()
+
+        # 检查GAT特征是否包含NaN
+        if torch.any(torch.isnan(gat_features)):
+            print(f"⚠️  检测到NaN GAT特征")
+            print(f"   输入UAV特征范围: [{uav_tensor.min():.3f}, {uav_tensor.max():.3f}]")
+            print(f"   输入目标特征范围: [{target_tensor.min():.3f}, {target_tensor.max():.3f}]")
+            # 使用零特征替代
+            gat_features = torch.zeros_like(gat_features)
 
         # 更新缓存
         self.gat_cache['features'] = gat_features
@@ -956,7 +968,25 @@ class UAVEnv(gym.Env):
 
         # 6. 更新速度和位置
         self.agent_vel[agent_idx] = actual_velocity
-        self.agent_pos[agent_idx] += self.agent_vel[agent_idx] * self.dt
+
+        # 检查速度是否包含NaN
+        if np.any(np.isnan(actual_velocity)):
+            print(f"⚠️  检测到NaN速度 - Agent {agent_idx}: {actual_velocity}")
+            self.agent_vel[agent_idx] = np.zeros(2, dtype=np.float32)
+
+        # 位置更新
+        new_pos = self.agent_pos[agent_idx] + self.agent_vel[agent_idx] * self.dt
+
+        # 检查位置是否包含NaN
+        if np.any(np.isnan(new_pos)):
+            print(f"⚠️  检测到NaN位置 - Agent {agent_idx}: {new_pos}")
+            print(f"   原位置: {self.agent_pos[agent_idx]}")
+            print(f"   速度: {self.agent_vel[agent_idx]}")
+            print(f"   dt: {self.dt}")
+            # 保持原位置不变
+            new_pos = self.agent_pos[agent_idx].copy()
+
+        self.agent_pos[agent_idx] = new_pos
 
         # 7. 边界处理
         self.agent_pos[agent_idx] = np.clip(self.agent_pos[agent_idx],
@@ -1071,6 +1101,11 @@ class UAVEnv(gym.Env):
 
         def to_screen(pos):
             x, y = pos
+            # 检查NaN值
+            if np.isnan(x) or np.isnan(y):
+                print(f"⚠️  检测到NaN位置: ({x}, {y})")
+                # 使用默认位置避免崩溃
+                x, y = 0.0, 0.0
             y = -y  # y 轴翻转
             sx = int((x / fixed_cam) * (self.width / 2) + self.width / 2)
             sy = int((y / fixed_cam) * (self.height / 2) + self.height / 2)
