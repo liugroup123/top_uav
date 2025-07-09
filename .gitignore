@@ -1,0 +1,8 @@
+# 忽略所有 output 开头的子文件夹（例如 drl_top/output_clean_env 等）
+drl_top/output*/
+
+# 忽略所有 __pycache__ 文件夹（递归匹配所有位置）
+__pycache__/
+
+# 通用写法：忽略所有路径下的 __pycache__ 文件夹
+**/__pycache__/

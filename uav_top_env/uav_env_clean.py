@@ -66,7 +66,6 @@ class UAVEnv(gym.Env):
         # 新的奖励权重 (优化连通性和覆盖平衡)
         self.connectivity_weight = 2.0      # 连通性权重 (提高)
         self.coverage_weight = 15.0         # 覆盖权重 (适当降低)
-        self.stability_weight = 0.5         # 稳定性权重
         self.topology_weight = 5.0          # 拓扑适应权重
         self.boundary_weight = 1.0          # 边界权重
         self.critical_connection_weight = 0.5  # 关键连接权重 (新增)
@@ -146,13 +145,8 @@ class UAVEnv(gym.Env):
         self.max_acceleration = 0.4  # 最大加速度
         self.damping_factor = 0.95   # 阻尼系数（可选）
 
-        # 稳定性奖励参数 (移植自动态避障实验)
+        # 训练步数计数器
         self.training_step = 0
-        self.initial_threshold = 0.6
-        self.threshold_increase_rate = 0.0001
-        self.max_threshold = 0.95
-        self.stability_bonus_value = 50.0
-        self.speed_tolerance = 0.1
 
         # 覆盖奖励参数
         self.covered_targets = set()  # 已覆盖的目标集合
@@ -280,7 +274,7 @@ class UAVEnv(gym.Env):
         # 检查拓扑变化
         self._check_topology_change()
 
-        # 计算奖励（包含速度限制奖励）
+        # 计算奖励
         rewards = self._compute_rewards(speed_violations)
         
         # 检查结束条件
@@ -464,13 +458,13 @@ class UAVEnv(gym.Env):
                 speed_limits[i] = self.max_base_speed
             elif len(critical_neighbors) == 1:
                 # 只有1个关键邻居，轻微限制
-                speed_limits[i] = self.max_base_speed * 0.9  # 90%速度
+                speed_limits[i] = self.max_base_speed * 0.8  # 90%速度
             elif len(critical_neighbors) == 2:
                 # 2个关键邻居，中等限制
-                speed_limits[i] = self.max_base_speed * 0.8  # 80%速度
+                speed_limits[i] = self.max_base_speed * 0.7  # 80%速度
             else:
                 # 3个或更多关键邻居，较强限制（避免成为关键节点）
-                speed_limits[i] = self.max_base_speed * 0.6  # 60%速度
+                speed_limits[i] = self.max_base_speed * 0.5  # 60%速度
 
         return speed_limits
 
@@ -545,14 +539,12 @@ class UAVEnv(gym.Env):
         # 1. 计算全局奖励组件
         connectivity_reward = self._compute_connectivity_reward_advanced()
         coverage_reward = self._compute_coverage_reward_advanced()
-        stability_reward = self._compute_stability_reward_advanced()
         topology_reward = self._compute_topology_adaptation_reward()
         critical_connection_reward = self._compute_critical_connection_reward()  # 新增关键连接奖励
 
         # 2. 全局奖励
         global_reward = (connectivity_reward * self.connectivity_weight +
                         coverage_reward * self.coverage_weight +
-                        stability_reward * self.stability_weight +
                         topology_reward * self.topology_weight +
                         critical_connection_reward * self.critical_connection_weight)
 
@@ -638,33 +630,7 @@ class UAVEnv(gym.Env):
         k_1 = 35 * len(self.active_agents)
         return k_1 * r_s_d
 
-    def _compute_stability_reward_advanced(self):
-        """计算稳定性奖励 """
-        stability_reward = 0
-        coverage_rate, _, _, _ = self.calculate_coverage_complete()
 
-        # 动态阈值计算
-        dynamic_threshold = min(self.initial_threshold + self.training_step * self.threshold_increase_rate,
-                               self.max_threshold)
-
-        # 检查是否所有智能体都符合稳定条件
-        all_agents_stable = True
-
-        if coverage_rate >= dynamic_threshold:
-            for i in self.active_agents:
-                # 获取当前智能体的速度
-                current_speed = np.linalg.norm(self.agent_vel[i])
-
-                # 检查该智能体是否满足速度条件
-                if current_speed > self.max_speed * self.speed_tolerance:
-                    all_agents_stable = False
-                    break
-
-            # 如果所有智能体都满足稳定条件，给予整体奖励
-            if all_agents_stable:
-                stability_reward += self.stability_bonus_value
-
-        return stability_reward * 0.5  # 调整权重
 
     def _compute_topology_adaptation_reward(self):
         """计算拓扑适应奖励"""
@@ -784,23 +750,7 @@ class UAVEnv(gym.Env):
 
         return penalty
 
-    def _compute_speed_compliance_reward(self, speed_violations):
-        """计算速度合规奖励"""
-        if not speed_violations:
-            return 0.0
 
-        total_compliance = 0.0
-        active_count = 0
-
-        for agent in self.agents:
-            if agent in speed_violations:
-                violation = speed_violations[agent]['violation']
-                # 合规度 = 1 - (违规程度 / 最大可能违规)
-                compliance = max(0.0, 1.0 - violation / self.max_base_speed)
-                total_compliance += compliance
-                active_count += 1
-
-        return total_compliance / max(active_count, 1)
 
     def _update_agent_dynamics(self, agent_idx, action, speed_limit, speed_violations, agent_name):
         """更新单个智能体的动力学状态（加速度控制）"""

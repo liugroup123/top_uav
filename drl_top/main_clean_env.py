@@ -75,7 +75,7 @@ def main():
 
     # 速度优化参数
     train_frequency = CONFIG.get("train_frequency", 3)  # 每3步训练一次
-    log_interval = CONFIG.get("log_interval", 10)       # 每10步记录一次日志
+    log_interval = CONFIG.get("log_interval", 5)       # 每5步记录一次日志
     
     # 创建简化环境
     env = UAVEnv(
