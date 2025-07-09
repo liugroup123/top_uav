@@ -32,9 +32,9 @@ from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
 
 # 获取当前文件目录路径
-model_dir = os.path.join(current_dir, './output_clean_env/models/test1')  # 模型保存文件夹
-video_dir = os.path.join(current_dir, './output_clean_env/videos/test1')  # 视频保存文件夹
-runs_dir = os.path.join(current_dir, './output_clean_env/runs/test1')  # TensorBoard 日志文件
+model_dir = os.path.join(current_dir, './output_clean_env/models/test2')  # 模型保存文件夹
+video_dir = os.path.join(current_dir, './output_clean_env/videos/test2')  # 视频保存文件夹
+runs_dir = os.path.join(current_dir, './output_clean_env/runs/test2')  # TensorBoard 日志文件
 
 # 确保相关目录存在
 os.makedirs(model_dir, exist_ok=True)
