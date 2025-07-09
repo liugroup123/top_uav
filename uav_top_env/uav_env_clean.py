@@ -150,7 +150,7 @@ class UAVEnv(gym.Env):
 
         # 覆盖奖励参数
         self.covered_targets = set()  # 已覆盖的目标集合
-        self.unique_coverage_weight = 30.0
+        self.unique_coverage_weight = 15.0  # 唯一覆盖权重
         
     def _setup_spaces(self):
         """设置观察和动作空间 - 保持原有格式"""
@@ -556,6 +556,11 @@ class UAVEnv(gym.Env):
                 boundary_penalty = self._calculate_boundary_penalty(i)
 
                 total_reward = global_reward + individual_reward + boundary_penalty
+
+                # 时间惩罚
+                time_penalty = -0.05 * self.curr_step
+                total_reward += time_penalty
+                
                 rewards[agent] = total_reward / 100.0  # 缩放到合理范围
             else:
                 rewards[agent] = 0.0
@@ -623,8 +628,8 @@ class UAVEnv(gym.Env):
         avg_min_distance = np.mean(min_distances)
         clipped_avg_min_distance = np.clip(avg_min_distance, 0, 15)
 
-        # 3. 复合奖励 (覆盖率^1.5 × 平均距离)
-        r_s_d = (coverage_rate ** 1.5) * clipped_avg_min_distance
+        # 3. 复合奖励 (覆盖率^2 × 平均距离)
+        r_s_d = (coverage_rate ** 2.0) * clipped_avg_min_distance
 
         # 4. 权重调整
         k_1 = 35 * len(self.active_agents)
@@ -710,9 +715,9 @@ class UAVEnv(gym.Env):
         # 适配参数 (比原版温和)
         max_penalty = 50.0           # 降低惩罚上限
         boundary_limit = self.world_size  # 使用环境的world_size (1.0)
-        safe_margin = 0.1            # 安全边距
-        penalty_factor = 10.0        # 降低惩罚因子
-        penalty_exponent = 2.0       # 降低指数斜率
+        safe_margin = 0.15            # 安全边距
+        penalty_factor = 20.0        # 降低惩罚因子
+        penalty_exponent = 2.5       # 降低指数斜率
 
         # 检查每个维度 (x, y)
         for dim in range(2):
