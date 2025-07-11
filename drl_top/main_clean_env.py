@@ -22,8 +22,8 @@ import imageio  # 简化视频保存
 
 # 导入简化环境和MATD3
 import importlib.util
-uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean.py')
-spec = importlib.util.spec_from_file_location("uav_env_clean", uav_env_path)
+uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean_v2.py')
+spec = importlib.util.spec_from_file_location("uav_env_clean_v2", uav_env_path)
 uav_env_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(uav_env_module)
 UAVEnv = uav_env_module.UAVEnv
@@ -32,9 +32,9 @@ from matd3_no_gat import MATD3, ReplayBuffer
 from config import CONFIG
 
 # 获取当前文件目录路径
-model_dir = os.path.join(current_dir, './output_clean_env/models/test2')  # 模型保存文件夹
-video_dir = os.path.join(current_dir, './output_clean_env/videos/test2')  # 视频保存文件夹
-runs_dir = os.path.join(current_dir, './output_clean_env/runs/test2')  # TensorBoard 日志文件
+model_dir = os.path.join(current_dir, './output_clean_env/models/test2_7_11')  # 模型保存文件夹
+video_dir = os.path.join(current_dir, './output_clean_env/videos/test2_7_11')  # 视频保存文件夹
+runs_dir = os.path.join(current_dir, './output_clean_env/runs/test2_7_11')  # TensorBoard 日志文件
 
 # 确保相关目录存在
 os.makedirs(model_dir, exist_ok=True)
@@ -75,7 +75,7 @@ def main():
 
     # 速度优化参数
     train_frequency = CONFIG.get("train_frequency", 3)  # 每3步训练一次
-    log_interval = CONFIG.get("log_interval", 5)       # 每5步记录一次日志
+    log_interval = CONFIG.get("log_interval", 3)       # 每5步记录一次日志
     
     # 创建简化环境
     env = UAVEnv(
@@ -215,6 +215,9 @@ def main():
                     writer.add_scalar('Loss/Critic', loss_info['critic_loss'], episode * max_steps + step)
 
             obs = next_obs
+            #完成任务的话就提前终止
+            if any(dones.values()):
+                break
 
             # 录制视频帧
             if record_video:
