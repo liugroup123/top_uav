@@ -297,14 +297,10 @@ class UAVEnv(gym.Env):
         # 终止条件：
         # 1. 达到最大步数
         # 2. 所有目标点都被覆盖且UAV网络连通
-        # 3. 所有优先目标点都被覆盖且UAV网络连通
         all_covered_and_connected = (coverage_rate >= 1.0) and fully_connected
-        priority_covered_and_connected = (priority_coverage_rate >= 1.0) and fully_connected
-        
+
         dones = {
-            agent: (self.curr_step >= self.max_steps) or 
-                   all_covered_and_connected or 
-                   priority_covered_and_connected
+            agent: (self.curr_step >= self.max_steps) or all_covered_and_connected
             for agent in self.agents
         }
         truncated = dones.copy()
