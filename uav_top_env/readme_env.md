@@ -25,3 +25,13 @@ r_s_d = (coverage_rate ** 2.0) * clipped_avg_min_distance
 原始的奖励就是不管对优先还是普通的目标点都是一样的，但是现在有先后顺序了
 
 
+## 后续修改方向
+
+1. 增加连通性的权重
+
+2. 添加lstm到gat代码里面
+
+3. 后续gat输出接一个attention
+
+后续主要方向就是这个了
+
