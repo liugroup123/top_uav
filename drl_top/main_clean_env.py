@@ -247,10 +247,14 @@ def main():
         episode_type = env.episode_plan['type']
         trigger_step = env.episode_plan['trigger_step'] 
         executed = env.episode_plan['executed']
+        # 记录平均每步奖励
+        real_steps = step + 1  # 实际经历的步数
+        avg_reward = episode_reward / real_steps if real_steps > 0 else 0.0
 
         # 打印详细的episode信息
         print(f"Episode {episode:4d}: 类型={episode_type:8s} | "
-              f"奖励={episode_reward:7.2f} | "
+              f"总奖励={episode_reward:7.2f} | "
+              f"平均奖励={avg_reward:.3f} | "
               f"最终覆盖率={final_coverage_rate:.3f} | "
               f"最大覆盖率={episode_max_coverage:.3f} | "
               f"活跃UAV={len(env.active_agents)}/{env.num_agents} | "
@@ -260,6 +264,7 @@ def main():
 
         # 将覆盖率记录到 TensorBoard
         writer.add_scalar('Performance/Coverage_Rate', final_coverage_rate, episode)
+        writer.add_scalar('Performance/Avg_Episode_Reward', avg_reward, episode) #记录平均奖励
         writer.add_scalar('Performance/Episode_Reward', episode_reward, episode)
         writer.add_scalar('Performance/Episode_Max_Coverage', episode_max_coverage, episode)  # 每轮最大覆盖率
         writer.add_scalar('Performance/Global_Max_Coverage', global_max_coverage_rate, episode)  # 全局最大覆盖率
