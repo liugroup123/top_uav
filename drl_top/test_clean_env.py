@@ -25,9 +25,9 @@ UAVEnv = uav_env_module.UAVEnv
 from matd3_no_gat import MATD3
 
 # 模型路径
-model_dir = os.path.join(current_dir, './output_clean_env/models/test1')
+model_dir = os.path.join(current_dir, r'E:\code\topological_uav\topological_uav_code\mpe_uav\drl_top\output_no_gat\models\test1')
 
-def test_model(model_path, num_test_episodes=5, render_mode='human', test_mode='mixed'):
+def test_model(model_path, num_test_episodes=10, render_mode='human', test_mode='mixed'):
     """
     简化的模型测试函数
     test_mode: 'normal', 'loss', 'addition', 'mixed'
@@ -180,7 +180,7 @@ def main():
     # 可以在这里修改测试模式
     test_model(
         model_path=model_path,
-        num_test_episodes=5,
+        num_test_episodes=10,
         render_mode='human',  # 改为 'rgb_array' 可以录制视频
         test_mode = 'mixed'  # 改为 'normal', 'loss', 'addition' 测试特定模式
     )

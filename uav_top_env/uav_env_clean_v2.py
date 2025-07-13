@@ -720,11 +720,11 @@ class UAVEnv(gym.Env):
         agent_pos = self.agent_pos[agent_idx]
 
         # 适配参数 (比原版温和)
-        max_penalty = 50.0           # 降低惩罚上限
+        max_penalty = 100.0           # 降低惩罚上限
         boundary_limit = self.world_size  # 使用环境的world_size (1.0)
         safe_margin = 0.15            # 安全边距
-        penalty_factor = 20.0        # 降低惩罚因子
-        penalty_exponent = 2.5       # 降低指数斜率
+        penalty_factor = 40.0        # 边界惩罚因子
+        penalty_exponent = 3.5       # 指数斜率
 
         # 检查每个维度 (x, y)
         for dim in range(2):
