@@ -279,13 +279,15 @@ class UAVEnv(gym.Env):
         
         # 检查结束条件 两个条件  新增终止条件判断
         coverage_rate, fully_connected, _, _ = self.calculate_coverage_complete()
+        # 终止条件：
+        # 1. 达到最大步数
+        # 2. 所有目标点都被覆盖且UAV网络连通
         all_covered_and_connected = (coverage_rate >= 1.0) and fully_connected
 
         dones = {
             agent: (self.curr_step >= self.max_steps) or all_covered_and_connected
             for agent in self.agents
         }
-        # dones = {agent: self.curr_step >= self.max_steps for agent in self.agents}
         truncated = dones.copy()
         
         # 获取观察
