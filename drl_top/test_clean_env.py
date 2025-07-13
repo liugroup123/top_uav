@@ -16,8 +16,8 @@ sys.path.append(parent_dir)
 
 # 导入环境和算法
 import importlib.util
-uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean.py')
-spec = importlib.util.spec_from_file_location("uav_env_clean", uav_env_path)
+uav_env_path = os.path.join(parent_dir, 'uav_top_env', 'uav_env_clean_v3.py')
+spec = importlib.util.spec_from_file_location("uav_env_clean_v3", uav_env_path)
 uav_env_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(uav_env_module)
 UAVEnv = uav_env_module.UAVEnv
@@ -112,7 +112,7 @@ def test_model(model_path, num_test_episodes=10, render_mode='human', test_mode=
             episode_reward += sum(rewards.values())
 
             # 记录覆盖率
-            coverage_rate, _, _, _ = env.calculate_coverage_complete()
+            coverage_rate, _, _, _, _ = env.calculate_coverage_complete()
             coverage_history.append(coverage_rate)
 
             # 渲染 (如果是human模式)
