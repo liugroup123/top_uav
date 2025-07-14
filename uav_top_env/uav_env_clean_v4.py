@@ -923,7 +923,7 @@ class UAVEnv(gym.Env):
             for j in self.active_agents:  # 修复：只检查活跃UAV
                 agent_pos = self.agent_pos[j]
                 distance = np.linalg.norm(target - agent_pos)
-                if distance <= self.coverage_radius:
+                if distance + 0.02 <= self.coverage_radius:
                     covered = True
                     break
             
