@@ -18,14 +18,16 @@ import os
 def _import_gat_model():
     """动态导入GAT模型"""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    gat_model_path = os.path.join(current_dir, 'gat_model_top.py')
+    # 修改为导入带LSTM的GAT模型
+    gat_model_path = os.path.join(current_dir, 'gat_model_top_lstm.py')
 
-    spec = importlib.util.spec_from_file_location("gat_model_top", gat_model_path)
+    spec = importlib.util.spec_from_file_location("gat_model_top_lstm", gat_model_path)
     gat_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gat_module)
 
     return gat_module.UAVAttentionNetwork, gat_module.create_adjacency_matrices
 
+# 更新导入
 UAVAttentionNetwork, create_adjacency_matrices = _import_gat_model()
 
 # 简化版本不需要复杂的配置导入
@@ -192,6 +194,10 @@ class UAVEnv(gym.Env):
 
         # 重置奖励相关参数
         self.covered_targets = set()  # 重置已覆盖目标集合
+        
+        # 重置LSTM状态
+        if hasattr(self.gat_model, 'reset_lstm_states'):
+            self.gat_model.reset_lstm_states()
         
         # 初始化UAV位置（与原版本一致：底部排列）
         self.agent_pos = []
@@ -420,7 +426,7 @@ class UAVEnv(gym.Env):
         return obs_list
 
     def _compute_gat_features(self):
-        """计算GAT特征 - 优化版本，减少CPU-GPU传输"""
+        """计算GAT特征 - 优化版本，支持LSTM时序特征"""
         # 检查是否需要更新GAT特征（缓存机制）
         if (self.gat_cache['features'] is not None and
             self.curr_step - self.gat_cache['last_update_step'] < self.gat_cache['update_interval']):
@@ -443,11 +449,17 @@ class UAVEnv(gym.Env):
             active_uavs=self.active_agents
         )
 
-        # GAT前向传播
+        # 为LSTM准备智能体ID和重置状态标志
+        agent_ids = list(range(self.num_agents))
+        reset_states = (self.curr_step == 0)  # 第一步重置状态
+
+        # GAT+LSTM前向传播
         with torch.set_grad_enabled(self.training):
             gat_features = self.gat_model(uav_tensor, target_tensor,
                                         uav_adj, uav_target_adj,
-                                        active_agents=self.active_agents)
+                                        active_agents=self.active_agents,
+                                        agent_ids=agent_ids,
+                                        reset_states=reset_states)
 
         if not self.training:
             gat_features = gat_features.detach()
