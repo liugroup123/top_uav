@@ -36,3 +36,5 @@ r_s_d = (coverage_rate ** 2.0) * clipped_avg_min_distance
 
 后续主要方向就是这个了
 
+
+uav_env_clean_v_new.py  这个环境就是原来奖励函数加上lstm

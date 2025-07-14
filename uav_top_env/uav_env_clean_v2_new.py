@@ -18,7 +18,8 @@ import os
 def _import_gat_model():
     """动态导入GAT模型"""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    gat_model_path = os.path.join(current_dir, 'gat_model_top.py')
+    # 修改为导入带LSTM的GAT模型
+    gat_model_path = os.path.join(current_dir, 'gat_model_top_lstm.py')
 
     spec = importlib.util.spec_from_file_location("gat_model_top", gat_model_path)
     gat_module = importlib.util.module_from_spec(spec)
@@ -152,6 +153,12 @@ class UAVEnv(gym.Env):
         self.covered_targets = set()  # 已覆盖的目标集合
         self.unique_coverage_weight = 15.0  # 唯一覆盖权重
         
+        # 优先目标点参数
+        self.priority_targets_ratio = 0.5 # 例如，20%的目标是优先目标
+        self.num_priority_targets = int(self.num_targets * self.priority_targets_ratio)
+        self.priority_target_indices = []  # 将在reset中初始化
+        self.priority_coverage_weight = 25.0  # 优先目标点覆盖权重
+        
     def _setup_spaces(self):
         """设置观察和动作空间 - 保持原有格式"""
         # 观察维度计算（与原版一致）
@@ -216,6 +223,17 @@ class UAVEnv(gym.Env):
         # 制定episode计划
         self._plan_episode()
         
+        # 重置LSTM状态
+        if hasattr(self.gat_model, 'reset_lstm_states'):
+            self.gat_model.reset_lstm_states()
+        
+        # 随机选择优先目标点
+        self.priority_target_indices = np.random.choice(
+            self.num_targets, 
+            size=self.num_priority_targets, 
+            replace=False
+        ).tolist()
+        
         # 返回原有格式的观察
         obs_list = self._get_obs()
         return {f"agent_{i}": obs_list[i] for i in range(self.num_agents)}, {}
@@ -275,7 +293,7 @@ class UAVEnv(gym.Env):
         self._check_topology_change()
 
         # 计算奖励
-        rewards = self._compute_rewards(speed_violations)
+        rewards = self._compute_rewards()
         
         # 检查结束条件
         dones = {agent: self.curr_step >= self.max_steps for agent in self.agents}
@@ -419,11 +437,17 @@ class UAVEnv(gym.Env):
             active_uavs=self.active_agents
         )
 
-        # GAT前向传播
+        # 为LSTM准备智能体ID和重置状态标志
+        agent_ids = list(range(self.num_agents))
+        reset_states = (self.curr_step == 0)  # 第一步重置状态
+
+        # GAT+LSTM前向传播
         with torch.set_grad_enabled(self.training):
             gat_features = self.gat_model(uav_tensor, target_tensor,
                                         uav_adj, uav_target_adj,
-                                        active_agents=self.active_agents)
+                                        active_agents=self.active_agents,
+                                        agent_ids=agent_ids,
+                                        reset_states=reset_states)
 
         if not self.training:
             gat_features = gat_features.detach()
@@ -531,7 +555,7 @@ class UAVEnv(gym.Env):
 
         return len(visited) == len(active_indices)
 
-    def _compute_rewards(self, speed_violations=None):
+    def _compute_rewards(self):
         """计算奖励"""
         self.training_step += 1
         rewards = {}
@@ -541,12 +565,14 @@ class UAVEnv(gym.Env):
         coverage_reward = self._compute_coverage_reward_advanced()
         topology_reward = self._compute_topology_adaptation_reward()
         critical_connection_reward = self._compute_critical_connection_reward()  # 新增关键连接奖励
+        priority_target_reward = self._compute_priority_target_reward() # 新增优先目标点奖励
 
         # 2. 全局奖励
         global_reward = (connectivity_reward * self.connectivity_weight +
                         coverage_reward * self.coverage_weight +
                         topology_reward * self.topology_weight +
-                        critical_connection_reward * self.critical_connection_weight)
+                        critical_connection_reward * self.critical_connection_weight +
+                        priority_target_reward * self.priority_coverage_weight) # 添加优先目标点奖励权重
 
         # 3. 为每个智能体分配奖励
         for i, agent in enumerate(self.agents):
@@ -693,6 +719,33 @@ class UAVEnv(gym.Env):
             if len(critical_neighbors) > 2:
                 reward -= 0.5  # 避免网络过度依赖单个节点
 
+        return reward
+
+    def _compute_priority_target_reward(self):
+        """计算优先目标点覆盖奖励"""
+        if not self.priority_target_indices or len(self.active_agents) == 0:
+            return 0.0
+            
+        # 计算优先目标点的覆盖情况
+        priority_covered_count = 0
+        for i in self.priority_target_indices:
+            target_pos = self.target_pos[i]
+            for agent_idx in self.active_agents:
+                agent_pos = self.agent_pos[agent_idx]
+                if np.linalg.norm(target_pos - agent_pos) <= self.coverage_radius:
+                    priority_covered_count += 1
+                    break
+        
+        # 计算优先目标点覆盖率
+        priority_coverage_rate = priority_covered_count / len(self.priority_target_indices)
+        
+        # 使用平方奖励，鼓励更高的覆盖率
+        reward = (priority_coverage_rate ** 2) * 10.0
+        
+        # 如果全部覆盖，给予额外奖励
+        if priority_coverage_rate >= 1.0:
+            reward += 5.0
+            
         return reward
 
     def _calculate_boundary_penalty(self, agent_idx):
@@ -855,11 +908,28 @@ class UAVEnv(gym.Env):
             fully_connected = all(visited)
             unconnected_count = visited.count(False)
 
+        # 如果是优先目标点，记录到优先覆盖列表中
+        priority_covered_flags = []
+        for i, tpos in enumerate(self.target_pos):
+            covered = False
+            for agent_idx in self.active_agents:
+                agent_pos = self.agent_pos[agent_idx]
+                if np.linalg.norm(tpos - agent_pos) <= self.coverage_radius:
+                    covered = True
+                    break
+            if i in self.priority_target_indices:
+                priority_covered_flags.append(covered)
+
+        # 计算优先目标点覆盖率
+        priority_covered_count = sum(priority_covered_flags)
+        total_priority_targets = len(self.priority_target_indices)
+        priority_coverage_rate = priority_covered_count / total_priority_targets if total_priority_targets > 0 else 0
+
         # 更新最大覆盖率
         if fully_connected:
             self.max_coverage_rate = max(self.max_coverage_rate, coverage_rate)
 
-        return coverage_rate, fully_connected, self.max_coverage_rate, unconnected_count
+        return coverage_rate, fully_connected, self.max_coverage_rate, unconnected_count, priority_coverage_rate
 
 
 
@@ -911,10 +981,15 @@ class UAVEnv(gym.Env):
             sy = int((y / fixed_cam) * (self.height / 2) + self.height / 2)
             return sx, sy
 
-        # 画目标点
-        for tpos in self.target_pos:
+        # 画目标点 - 区分普通目标点和优先目标点
+        for i, tpos in enumerate(self.target_pos):
             sx, sy = to_screen(tpos)
-            pygame.draw.circle(self.screen, (0, 255, 0), (sx, sy), 5)
+            if i in self.priority_target_indices:
+                # 优先目标点 - 使用橙红色
+                pygame.draw.circle(self.screen, (255, 69, 0), (sx, sy), 7)
+            else:
+                # 普通目标点 - 使用绿色
+                pygame.draw.circle(self.screen, (0, 255, 0), (sx, sy), 5)
 
         # 存储无人机屏幕位置用于连线
         screen_positions = []
@@ -999,10 +1074,15 @@ class UAVEnv(gym.Env):
         self.screen.blit(text_surface, (10, 70))
 
         # 显示覆盖率信息
-        coverage_rate, _, _, _ = self.calculate_coverage_complete()
+        coverage_rate, _, _, _, priority_coverage_rate = self.calculate_coverage_complete()
         coverage_text = f"Coverage: {coverage_rate:.3f}"
         text_surface = font.render(coverage_text, True, (0, 0, 0))
         self.screen.blit(text_surface, (10, 100))
+
+        # 显示优先目标点覆盖率
+        priority_coverage_text = f"Priority Coverage: {priority_coverage_rate:.3f}"
+        text_surface = font.render(priority_coverage_text, True, (0, 0, 0))
+        self.screen.blit(text_surface, (10, 130))
 
         # 显示episode计划信息
         if hasattr(self, 'episode_plan'):
@@ -1017,7 +1097,7 @@ class UAVEnv(gym.Env):
                 plan_text += " [done]"
 
             text_surface = font.render(plan_text, True, (0, 0, 255))
-            self.screen.blit(text_surface, (10, 130))
+            self.screen.blit(text_surface, (10, 160))
 
 
 
